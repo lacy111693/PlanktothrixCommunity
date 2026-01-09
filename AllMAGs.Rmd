@@ -1,0 +1,107 @@
+---
+title: "Best MAGs Planktothrix"
+output: pdf_document
+date: "2025-02-07"
+---
+```{r}
+library(readr)
+library(tidyverse)
+library(jsonlite)
+library(stringr)
+library(dplyr)
+```
+
+
+GTDB file
+```{r}
+gtdb <- read.delim("C:/Users/lacy_barrett/Downloads/gtdbtk.bac120.summary.tsv", header = TRUE)
+
+# Extract genus name from classification string
+gtdb$genus <- sub(".*;g__([^;]+).*", "\\1", gtdb$classification)
+
+```
+
+
+still need contigs, can get it from checkm
+```{r}
+#this file is messy so have to do a few things to it
+# Step 1: Read TSV as plain text
+checkm <- read_tsv("C:/Users/lacy_barrett/Downloads/bin_stats_ext.tsv", col_names = c("file", "metadata"), col_types = "cc")
+
+# Step 2: Convert the Python dict-like strings to valid JSON
+checkm <- checkm %>%
+  mutate(
+    metadata_json = str_replace_all(metadata, "'", '"'),   # replace single quotes with double quotes
+    metadata_json = str_replace_all(metadata_json, "None", "null")  # handle Python None if present
+  )
+
+# Step 3: Parse JSON into a list-column
+checkm <- checkm %>%
+  mutate(metadata_parsed = map(metadata_json, ~fromJSON(.x, simplifyDataFrame = TRUE)))
+
+# Step 4: Optionally, unnest into a flat table
+checkm <- checkm %>%
+  unnest_wider(metadata_parsed)
+
+# Select only the desired columns
+checkm <- checkm[, c("file", "# contigs", "Contamination", "Completeness", "Genome size")]
+
+```
+
+
+Now keep all columns from checkm but only keep bins that are in gtdb
+```{r}
+
+final_data <- checkm %>%
+  semi_join(gtdb, by = c("file" = "user_genome")) %>%
+  left_join(
+    gtdb %>% 
+      dplyr::select(user_genome, genus),
+    by = c("file" = "user_genome")
+  ) %>%
+  mutate(file = sub("\\.fa$", "", file))
+
+
+```
+
+Rename and organize columns
+```{r}
+#clean up genome file name
+final_data <- final_data %>%
+  mutate(
+    file = str_replace(file, ".*?(\\d+).*\\.([0-9]+)$", "\\1.\\2")
+  )
+
+
+final_data <- final_data %>%
+  rename(
+    `Bin Identity` = `genus`,
+    `Culture Origin` = `file`,
+    `Bin completeness` = `Completeness`,
+    `Bin contamination` = `Contamination`,
+    `Number of contigs` = `# contigs`,
+    `Size of genome (bp)` = `Genome size`
+  )
+
+#order it
+final_data <- final_data %>%
+  dplyr::select(
+    `Bin Identity`, 
+    `Culture Origin`, 
+    `Bin completeness`, 
+    `Bin contamination`, 
+    `Number of contigs`, 
+    `Size of genome (bp)`
+  ) %>%
+  arrange(`Bin Identity`)
+
+```
+
+
+
+export
+```{r}
+write.csv(final_data, "All_MAGs.csv", row.names = FALSE)
+
+```
+
