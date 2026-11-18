@@ -1,0 +1,608 @@
+---
+title: "coverm"
+output: pdf_document
+date: "2026-09-03"
+---
+
+Load packages and read in files
+```{r}
+# Start with a clean slate
+rm(list=ls())
+
+# Load libraries
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(viridis)
+library(scales)
+library(vegan)
+
+# Read file
+folder <- "D:/Planktothrix_microbiomes/coverm_65"
+
+files <- list.files(
+  path = folder,
+  pattern = "\\.tsv$",
+  full.names = TRUE
+)
+
+data_list <- lapply(files, function(f) {
+
+  dat <- read.delim(
+    f,
+    header = TRUE,
+    sep = "\t",
+    check.names = FALSE,
+    stringsAsFactors = FALSE
+  )
+
+  # Expected order:
+  # Genome, Mean, Relative Abundance (%), Covered Fraction
+  dat <- dat[, 1:4]
+
+  colnames(dat) <- c(
+    "Genome",
+    "Mean",
+    "Relative_Abundance",
+    "Covered_Fraction"
+  )
+
+  dat
+})
+
+names(data_list) <- tools::file_path_sans_ext(basename(files))
+
+all_data <- bind_rows(data_list, .id = "Culture") %>%
+  mutate(
+    Culture = sub("^coverm_", "", Culture)
+  ) %>%
+  filter(
+    !grepl("^unmapped$", Genome, ignore.case = TRUE)
+  )
+
+```
+
+
+
+Include genus
+```{r}
+gtdb <- read.delim(
+  "D:/Planktothrix_microbiomes/gtdb_output/65MAGs/gtdbtk.bac120.summary.tsv",
+  header = TRUE,
+  check.names = FALSE
+)
+
+gtdb_clean <- gtdb %>%
+  select(user_genome, classification) %>%
+  separate(
+    classification,
+    into = c(
+      "domain",
+      "phylum",
+      "class",
+      "order",
+      "family",
+      "genus",
+      "species"
+    ),
+    sep = ";",
+    fill = "right"
+  ) %>%
+  mutate(
+    across(
+      domain:species,
+      ~ sub("^[a-z]__", "", .)
+    )
+  ) %>%
+  mutate(
+    Genus = case_when(
+      !is.na(genus) & genus != "" ~ genus,
+      !is.na(family) & family != "" ~ paste0(family, " (family)"),
+      TRUE ~ "Unclassified"
+    ),
+    Phylum = case_when(
+      !is.na(phylum) & phylum != "" ~ phylum,
+      TRUE ~ "Unclassified"
+    )
+  ) %>%
+  select(
+    user_genome,
+    Genus,
+    Phylum
+  )
+
+# Join GTDB taxonomy to each MAG
+all_data <- all_data %>%
+  left_join(
+    gtdb_clean,
+    by = c("Genome" = "user_genome")
+  ) %>%
+  mutate(
+    Genus = coalesce(Genus, "Unclassified"),
+    Phylum = coalesce(Phylum, "Unclassified"),
+    Genus = recode(
+      Genus,
+      "JACDQM01" = "JACDQM01 (Kinneretia)"
+    )
+  )
+
+```
+
+
+Make csv
+```{r}
+write.csv(all_data, "D:/Planktothrix_microbiomes/manuscript_figures/supplemental/coverm65.csv", row.names = FALSE)
+
+```
+
+
+Prep data for plotting
+```{r}
+culture_order <- c(
+  "1025", "1026", "1027", "1029",
+  "1030", "1031", "1032", "1033",
+  "1801", "1802", "1803", "1804",
+  "1805", "1806", "1807", "1808",
+  "1809", "1810", "1811", "1812"
+)
+
+plot_data <- all_data %>%
+  mutate(
+    Culture = as.character(Culture)
+  ) %>%
+  filter(
+    Culture %in% culture_order
+  ) %>%
+  select(
+    Genome,
+    Genus,
+    Phylum,
+    Culture,
+    Relative_Abundance
+  )
+
+# Keep individual MAGs whose maximum abundance
+# reaches at least 1% in any culture
+mags_to_plot <- plot_data %>%
+  group_by(Genome) %>%
+  summarise(
+    Max_Abundance = max(Relative_Abundance, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  filter(Max_Abundance >= 1) %>%
+  pull(Genome)
+
+plot_data <- plot_data %>%
+  filter(Genome %in% mags_to_plot)
+
+# Order MAGs by their own median abundance
+mag_order <- plot_data %>%
+  group_by(Genome) %>%
+  summarise(
+    Median_Abundance = median(
+      Relative_Abundance,
+      na.rm = TRUE
+    ),
+    .groups = "drop"
+  ) %>%
+  arrange(desc(Median_Abundance), Genome) %>%
+  pull(Genome)
+
+# Genus label, while keeping Genome
+# as the unique plotting identifier
+mag_labels <- plot_data %>%
+  distinct(Genome, Genus) %>%
+  mutate(
+    Label = Genus
+  )
+
+plot_data <- plot_data %>%
+  left_join(
+    mag_labels,
+    by = c("Genome", "Genus")
+  ) %>%
+  mutate(
+    Genome = factor(Genome, levels = mag_order)
+  )
+
+# Named label vector for the x-axis
+axis_labels <- setNames(
+  mag_labels$Label,
+  mag_labels$Genome
+)
+```
+
+
+
+Create abundance boxplots across cultures
+```{r}
+phylum_colors <- c(
+  "Actinomycetota"  = "#7c6f64",
+  "Bacteroidota"    = "#5b7694",
+  "Cyanobacteriota" = "#52796f",
+  "Pseudomonadota"  = "#b45f5a",
+  "Chloroflexota"   = "#C49A56",
+  "Unclassified"    = "#999999"
+)
+
+boxplot <- ggplot(
+  plot_data,
+  aes(
+    x = Genome,
+    y = Relative_Abundance,
+    fill = Phylum
+  )
+) +
+  geom_boxplot(
+    outlier.shape = NA,
+    alpha = 0.8
+  ) +
+  geom_jitter(
+    width = 0.15,
+    size = 1.5,
+    alpha = 0.5
+  ) +
+  scale_x_discrete(
+    labels = axis_labels
+  ) +
+  scale_fill_manual(
+    values = phylum_colors,
+    na.value = "#999999"
+  ) +
+  labs(
+    x = "Genus of each MAG",
+    y = "MAG Relative Abundance (%)",
+    fill = "Phylum"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(
+      angle = 45,
+      hjust = 1,
+      size = 8
+    ),
+    legend.position = "right"
+  )
+
+boxplot
+```
+
+
+
+```{r}
+# Save high-resolution versions
+
+ggsave("D:/Planktothrix_microbiomes/manuscript_figures/supplemental/coverm65.png", boxplot, width = 16, height = 6, dpi = 600)
+
+# PDF version
+ggsave(
+  "D:/Planktothrix_microbiomes/manuscript_figures/pdf_figs/FigS4.pdf",
+  plot = boxplot,
+  device = cairo_pdf,
+  width = 16,
+  height = 6,
+  units = "in"
+)
+```
+
+
+
+Is there a difference among the 65 MAGs across cultures
+```{r}
+# Make stat data frame
+stat_data <- all_data %>%
+  mutate(
+    Culture = factor(Culture),
+    Genome = factor(Genome)
+  ) %>%
+  filter(Culture %in% culture_order) %>%
+  select(Culture, Genome, Genus, Relative_Abundance)
+
+# How much does each MAG vary between cultures
+mag_variation <- stat_data %>%
+  group_by(Genome, Genus) %>%
+  summarise(
+    n = n(),
+    Mean = mean(Relative_Abundance, na.rm = TRUE),
+    Median = median(Relative_Abundance, na.rm = TRUE),
+    SD = sd(Relative_Abundance, na.rm = TRUE),
+    IQR = IQR(Relative_Abundance, na.rm = TRUE),
+    Min = min(Relative_Abundance, na.rm = TRUE),
+    Max = max(Relative_Abundance, na.rm = TRUE),
+    .groups = "drop"
+  )
+```
+
+
+
+```{r}
+# Save
+write.csv(
+  mag_variation,
+  "D:/Planktothrix_microbiomes/manuscript_figures/supplemental/MAG_abundance_variation.csv",
+  row.names = FALSE
+)
+```
+
+
+Bray-Curtis dissimilarity of MAG communities
+```{r}
+# Create culture x MAG relative abundance matrix
+mag_matrix <- all_data %>%
+  mutate(Culture = as.character(Culture)) %>%
+  filter(Culture %in% culture_order) %>%
+  select(Culture, Genome, Relative_Abundance) %>%
+  pivot_wider(
+    names_from = Genome,
+    values_from = Relative_Abundance,
+    values_fill = 0
+  )
+
+# Put cultures in desired order
+mag_matrix <- mag_matrix %>%
+  mutate(
+    Culture = factor(Culture, levels = culture_order)
+  ) %>%
+  arrange(Culture)
+
+# Save culture names
+culture_names <- as.character(mag_matrix$Culture)
+
+# Convert abundance columns to numeric matrix
+mag_abundance_matrix <- mag_matrix %>%
+  select(-Culture) %>%
+  as.data.frame()
+
+rownames(mag_abundance_matrix) <- culture_names
+
+# Calculate Bray-Curtis dissimilarity
+bray_mag <- vegdist(
+  mag_abundance_matrix,
+  method = "bray"
+)
+
+# PERMANOVA
+
+# Create grouping factor for isolation year
+isolation_year <- ifelse(
+  grepl("^10", rownames(mag_abundance_matrix)),
+  "10xx",
+  "18xx"
+)
+
+isolation_year <- factor(isolation_year)
+
+# Check sample assignments
+data.frame(
+  Culture = rownames(mag_abundance_matrix),
+  Isolation_Year = isolation_year
+)
+
+# Run PERMANOVA
+set.seed(42)
+
+permanova_mag <- adonis2(
+  bray_mag ~ isolation_year,
+  permutations = 999
+)
+
+permanova_mag
+```
+
+
+
+```{r}
+# Principal Coordinates Analysis
+pcoa_mag <- cmdscale(
+  bray_mag,
+  k = 2,
+  eig = TRUE,
+  add = TRUE
+)
+
+# Extract coordinates
+pcoa_data <- data.frame(
+  Culture = rownames(pcoa_mag$points),
+  PCoA1 = pcoa_mag$points[, 1],
+  PCoA2 = pcoa_mag$points[, 2]
+)
+
+# Percentage variation represented by each PCoA axis
+positive_eig <- pcoa_mag$eig[pcoa_mag$eig > 0]
+
+variance_explained <- positive_eig / sum(positive_eig) * 100
+
+PCoA1_percent <- round(variance_explained[1], 1)
+PCoA2_percent <- round(variance_explained[2], 1)
+
+PCoA1_percent
+PCoA2_percent
+
+# Plot
+pcoa_plot <- ggplot(
+  pcoa_data,
+  aes(
+    x = PCoA1,
+    y = PCoA2
+  )
+) +
+  geom_point(
+    size = 4,
+    alpha = 0.8
+  ) +
+  geom_text(
+    aes(label = Culture),
+    vjust = -0.8,
+    size = 3
+  ) +
+  labs(
+    x = paste0("PCoA1 (", PCoA1_percent, "%)"),
+    y = paste0("PCoA2 (", PCoA2_percent, "%)"),
+    color = "Isolation Year"
+  ) +
+  theme_minimal() +
+  theme(
+    legend.position = "right"
+  )
+
+pcoa_plot
+```
+
+
+
+```{r}
+ggsave(
+  "D:/Planktothrix_microbiomes/manuscript_figures/supplemental/PCoA_MAG_CoverM.svg",
+  plot = pcoa_plot,
+  width = 10,
+  height = 6,
+  units = "in"
+)
+```
+
+
+Pairwise MAG abundance correlations
+```{r}
+# Make sure all MAG abundance columns are numeric
+mag_abundance_matrix[] <- lapply(
+  mag_abundance_matrix,
+  as.numeric
+)
+
+# Get MAG names
+mag_names <- colnames(mag_abundance_matrix)
+
+# Create all unique pairs of MAGs
+mag_pairs <- combn(
+  mag_names,
+  2,
+  simplify = FALSE
+)
+
+# Run Spearman correlation for every MAG pair
+correlation_results <- lapply(
+  mag_pairs,
+  function(pair) {
+    
+    x <- mag_abundance_matrix[[pair[1]]]
+    y <- mag_abundance_matrix[[pair[2]]]
+    
+    # Spearman correlation
+    test <- cor.test(
+      x,
+      y,
+      method = "spearman",
+      exact = FALSE
+    )
+    
+    data.frame(
+      MAG1 = pair[1],
+      MAG2 = pair[2],
+      Rho = unname(test$estimate),
+      P_value = test$p.value
+    )
+  }
+)
+
+# Combine results into one dataframe
+correlation_results <- bind_rows(correlation_results)
+
+# Correct for multiple comparisons using
+# Benjamini-Hochberg false discovery rate
+correlation_results <- correlation_results %>%
+  mutate(
+    P_adjusted = p.adjust(
+      P_value,
+      method = "BH"
+    )
+  )
+
+# Sort by adjusted p-value
+correlation_results <- correlation_results %>%
+  arrange(P_adjusted)
+
+# Check number of pairwise comparisons
+nrow(correlation_results)
+
+# Summarize correlation coefficients
+summary(correlation_results$Rho)
+
+# Summarize adjusted p-values
+summary(correlation_results$P_adjusted)
+
+# Identify correlations significant after BH correction
+significant_correlations <- correlation_results %>%
+  filter(P_adjusted < 0.05)
+
+# Number of significant correlations
+nrow(significant_correlations)
+
+# Add direction
+significant_correlations <- significant_correlations %>%
+  mutate(
+    Direction = case_when(
+      Rho > 0 ~ "Positive",
+      Rho < 0 ~ "Negative",
+      TRUE ~ "None"
+    )
+  ) %>%
+  arrange(P_adjusted)
+
+# View results
+significant_correlations
+
+# How many significant positive and negative correlations?
+table(significant_correlations$Direction)
+
+significant_correlations
+
+# Create MAG-to-genus lookup table
+mag_taxonomy <- all_data %>%
+  select(Genome, Genus) %>%
+  distinct()
+
+# Add genus identity for both MAGs
+significant_correlations <- significant_correlations %>%
+  left_join(
+    mag_taxonomy,
+    by = c("MAG1" = "Genome")
+  ) %>%
+  rename(Genus1 = Genus) %>%
+  
+  left_join(
+    mag_taxonomy,
+    by = c("MAG2" = "Genome")
+  ) %>%
+  rename(Genus2 = Genus) %>%
+  
+  select(
+    MAG1,
+    Genus1,
+    MAG2,
+    Genus2,
+    Rho,
+    P_value,
+    P_adjusted,
+    Direction
+  ) %>%
+  arrange(desc(abs(Rho)))
+
+
+```
+
+
+Save
+```{r}
+write.csv(
+  correlation_results,
+  "D:/Planktothrix_microbiomes/manuscript_figures/supplemental/MAG_Spearman_correlations_all.csv",
+  row.names = FALSE
+)
+
+write.csv(
+  significant_correlations,
+  "D:/Planktothrix_microbiomes/manuscript_figures/supplemental/MAG_Spearman_correlations_significant.csv",
+  row.names = FALSE
+)
+```
+

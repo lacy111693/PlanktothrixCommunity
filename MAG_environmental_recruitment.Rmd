@@ -1,0 +1,392 @@
+---
+title: "Plk_heterotrophs"
+output: html_document
+date: "2026-08-26"
+---
+
+```{r}
+# Start with a clean slate
+rm(list=ls())
+
+# Load libraries
+library(tidyverse)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(patchwork)
+library(grid)
+
+# Read CoverM output
+coverm <- read.delim("D:/Planktothrix_microbiomes/coverm_eerie/coverm_2018_ODNR1.tsv",
+                     check.names = FALSE)
+
+# Read GTDB-Tk summary
+gtdb <- read.delim("D:/Planktothrix_microbiomes/gtdb_output/65MAGs/gtdbtk.bac120.summary.tsv",
+                   check.names = FALSE)
+
+# Look at column names
+names(coverm)
+names(gtdb)
+```
+
+
+```{r}
+
+# Clean GTDB taxonomy
+gtdb_clean <- gtdb %>%
+  select(user_genome, classification) %>%
+  separate(
+    classification,
+    into = c("domain", "phylum", "class", "order",
+             "family", "genus", "species"),
+    sep = ";",
+    fill = "right"
+  ) %>%
+  mutate(
+    across(domain:species, ~ sub("^[a-z]__", "", .))
+  )
+
+# Clean CoverM output
+coverm_clean <- coverm %>%
+  filter(Genome != "unmapped") %>%
+  rename(
+    mean_coverage =
+      `140938_GGAGGAAT-GAACGGTT_S17_R1_001.fastq Mean`,
+    covered_fraction =
+      `140938_GGAGGAAT-GAACGGTT_S17_R1_001.fastq Covered Fraction`,
+    relative_abundance =
+      `140938_GGAGGAAT-GAACGGTT_S17_R1_001.fastq Relative Abundance (%)`
+  )
+
+# Merge taxonomy and recruitment
+ODNR1 <- coverm_clean %>%
+  left_join(
+    gtdb_clean,
+    by = c("Genome" = "user_genome")
+  ) %>%
+  mutate(
+    percent_genome_covered = covered_fraction * 100
+  ) %>%
+  select(
+    Genome,
+    genus,
+    species,
+    percent_genome_covered,
+    mean_coverage,
+    relative_abundance,
+    phylum,
+    class,
+    order,
+    family
+  ) %>%
+  arrange(desc(percent_genome_covered))
+
+View(ODNR1)
+```
+
+
+```{r}
+ODNR1 %>%
+  select(
+    Genome,
+    genus,
+    species,
+    percent_genome_covered,
+    mean_coverage,
+    relative_abundance
+  ) %>%
+  print(row.names = FALSE)
+```
+
+
+
+```{r}
+# Read and clean ODNR4
+ODNR4_raw <- read.delim(
+  "D:/Planktothrix_microbiomes/coverm_eerie/coverm_2017_ODNR4.tsv",
+  check.names = FALSE
+)
+
+names(ODNR4_raw)[2:4] <- c(
+  "mean_coverage",
+  "relative_abundance",
+  "covered_fraction"
+)
+
+ODNR4 <- ODNR4_raw %>%
+  filter(Genome != "unmapped") %>%
+  left_join(
+    gtdb_clean,
+    by = c("Genome" = "user_genome")
+  ) %>%
+  mutate(
+    percent_genome_covered = covered_fraction * 100
+  )
+```
+
+
+```{r}
+# Combine 2017 and 2018 DNA recruitment
+dna_plot <- bind_rows(
+  
+  ODNR4 %>%
+    transmute(
+      Genome,
+      genus,
+      species,
+      sample = "2017",
+      percent_genome_covered
+    ),
+  
+  ODNR1 %>%
+    transmute(
+      Genome,
+      genus,
+      species,
+      sample = "2018",
+      percent_genome_covered
+    )
+)  %>%
+  mutate(
+    genus = if_else(
+      is.na(genus) | trimws(genus) == "",
+      "f__CAISDR01",
+      genus
+    )
+  )
+```
+
+
+
+```{r}
+
+# Make labels and order MAGs
+
+dna_plot <- dna_plot %>%
+  mutate(
+    taxon = case_when(
+      !is.na(species) & species != "" ~ species,
+      !is.na(genus) & genus != "" ~ genus,
+      TRUE ~ Genome
+    )
+  )
+
+dna_plot <- dna_plot %>%
+  mutate(
+    label = paste0(taxon, " (", Genome, ")")
+  )
+
+mag_order <- dna_plot %>%
+  group_by(label) %>%
+  summarise(
+    max_breadth = max(percent_genome_covered),
+    .groups = "drop"
+  ) %>%
+  arrange(max_breadth) %>%
+  pull(label)
+
+dna_plot$label <- factor(
+  dna_plot$label,
+  levels = mag_order
+)
+```
+
+
+
+```{r}
+plot_wide <- dna_plot %>%
+  select(
+    Genome,
+    genus,
+    sample,
+    percent_genome_covered
+  ) %>%
+  distinct() %>%
+  pivot_wider(
+    names_from = sample,
+    values_from = percent_genome_covered
+  ) %>%
+  mutate(
+    max_breadth = pmax(`2017`, `2018`, na.rm = TRUE)
+  )
+
+plot_wide <- plot_wide %>%
+  arrange(genus, desc(max_breadth)) %>%
+  mutate(
+    Genome = factor(Genome, levels = rev(unique(Genome)))
+  )
+
+heat_dat <- plot_wide %>%
+  select(Genome, genus, `2017`, `2018`) %>%
+  pivot_longer(
+    cols = c(`2017`, `2018`),
+    names_to = "sample",
+    values_to = "coverage"
+  )
+
+```
+
+
+
+```{r}
+# Calculate max coverage per MAG
+plot_wide <- plot_wide %>%
+  mutate(
+    max_breadth = pmax(`2017`, `2018`, na.rm = TRUE)
+  )
+
+# Order genera by their most strongly recruited MAG
+genus_order <- plot_wide %>%
+  group_by(genus) %>%
+  summarise(
+    genus_max = max(max_breadth, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  arrange(desc(genus_max)) %>%
+  pull(genus)
+
+# Apply genus order and then order MAGs within genus
+plot_wide <- plot_wide %>%
+  mutate(
+    genus = factor(
+      genus,
+      levels = genus_order
+    )
+  ) %>%
+  arrange(
+    genus,
+    desc(max_breadth)
+  )
+
+# MAG order for plotting
+mag_order <- plot_wide %>%
+  pull(Genome)
+
+plot_wide$Genome <- factor(
+  plot_wide$Genome,
+  levels = rev(mag_order)
+)
+
+heat_dat <- plot_wide %>%
+  select(
+    Genome,
+    genus,
+    `2017`,
+    `2018`
+  ) %>%
+  pivot_longer(
+    cols = c(`2017`, `2018`),
+    names_to = "year",
+    values_to = "coverage"
+  )
+
+
+
+```
+
+
+
+
+```{r}
+# DNA panel
+p_dna <- ggplot(
+  heat_dat,
+  aes(
+    x = year,
+    y = Genome,
+    fill = coverage
+  )
+) +
+  geom_tile(
+    color = "white",
+    linewidth = 0.5,
+    width = 0.98,
+    height = 0.98
+  ) +
+  
+  geom_text(
+    aes(label = sprintf("%.1f", coverage)),
+    size = 3.4
+  ) +
+  
+  facet_grid(
+    genus ~ .,
+    scales = "free_y",
+    space = "free_y",
+    switch = "y"
+  ) +
+  
+  scale_fill_gradientn(
+    colours = c(
+      "#f7fbff",
+      "#c6dbef",
+      "#6baed6",
+      "#2171b5",
+      "#08306b"
+    ),
+    values = scales::rescale(c(0, 10, 25, 50, 100)),
+    limits = c(0, 100),
+    breaks = c(0, 25, 50, 75, 100),
+    name = "Genome covered (%)"
+  ) +
+  
+  labs(
+    x = NULL,
+    y = NULL
+  ) +
+  
+  theme_classic(base_size = 11) +
+  theme(
+    # Put genus strips on far left
+    strip.placement = "outside",
+    
+    # THIS creates the genus "bars"
+    strip.background = element_rect(
+      fill = "grey90",
+      color = "grey60",
+      linewidth = 0.4
+    ),
+    
+    # Horizontal genus names inside the bars
+    strip.text.y.left = element_text(
+      angle = 0,
+      size = 8.5,
+      face = "italic",
+      hjust = 0.5,
+      margin = margin(2, 5, 2, 5)
+    ),
+    
+    # MAG labels
+    axis.text.y = element_text(
+      size = 8,
+      margin = margin(r = 3)
+    ),
+    
+    axis.text.x = element_text(size = 11),
+    axis.ticks.y = element_blank(),
+    
+    # Small but visible space separating genera
+    panel.spacing.y = unit(0.10, "lines"),
+    
+    legend.position = "bottom",
+    legend.title = element_text(size = 10),
+    legend.text = element_text(size = 9),
+    legend.key.width = unit(1.4, "cm"),
+    
+    plot.margin = margin(3, 2, 2, 2)
+  )
+
+p_dna
+```
+
+
+```{r}
+ggsave(
+  "MAG_environmental_recruitment.svg",
+  p_dna,
+  width = 8,
+  height = 12,
+  units = "in"
+)
+```
+

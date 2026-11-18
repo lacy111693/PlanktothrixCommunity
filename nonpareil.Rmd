@@ -1,0 +1,110 @@
+---
+title: "nonpareil"
+output: pdf_document
+date: "2026-09-09"
+---
+
+Nonpareil curves
+```{r}
+# Start with a clean slate
+rm(list=ls())
+
+# Load packages
+library(dplyr)
+library(tidyverse)
+library(Nonpareil)
+
+# Load files
+files <- list.files(
+    "D:/Planktothrix_microbiomes/nonpareil",
+    pattern = "\\.npo$",
+    full.names = TRUE
+)
+
+
+# Plot nonpareil curves
+png(
+  "D:/Planktothrix_microbiomes/manuscript_figures/supplemental/nonpareil_curves.png",
+  width = 8,
+  height = 6,
+  units = "in",
+  res = 600
+)
+
+# Generate the Nonpareil plot while PNG device is open
+nps <- Nonpareil.set(
+  files,
+  plot.opts = list(plot.observed = FALSE)
+)
+
+# Close PNG device
+dev.off()
+
+# Save PDF version
+# Open PDF graphics device
+cairo_pdf(
+  "D:/Planktothrix_microbiomes/manuscript_figures/pdf_figs/FigS1.pdf",
+  width = 8,
+  height = 6
+)
+
+# Generate Nonpareil curves
+nps <- Nonpareil.set(
+  files,
+  plot.opts = list(plot.observed = FALSE)
+)
+
+# Close PDF graphics device
+dev.off()
+
+# Statistics
+summary(nps)
+```
+
+
+Exportable table for supplemental
+```{r}
+# Extract summary statistics
+np_summary <- summary(nps)
+
+# Convert to a data frame
+np_table <- as.data.frame(np_summary)
+
+# Add culture ID from row names
+np_table <- np_table %>%
+  tibble::rownames_to_column("Culture ID") %>%
+  mutate(
+    `Estimated coverage percent` = C * 100,
+    `Observed sequencing effort (Gbp)` = LR / 1e9,
+    `Projected effort (Gbp)` = LRstar / 1e9,
+    `Diversity index` = diversity,
+    `Model R²` = modelR
+  ) %>%
+  select(
+    `Culture ID`,
+    `Estimated coverage percent`,
+    `Observed sequencing effort (Gbp)`,
+    `Projected effort (Gbp)`,
+    `Diversity index`,
+    `Model R²`
+  )
+
+# Round values
+np_table <- np_table %>%
+  mutate(
+    `Estimated coverage percent` = round(`Estimated coverage percent`, 2),
+    `Observed sequencing effort (Gbp)` = round(`Observed sequencing effort (Gbp)`, 2),
+    `Projected effort (Gbp)` = round(`Projected effort (Gbp)`, 2),
+    `Diversity index` = round(`Diversity index`, 2),
+    `Model R²` = round(`Model R²`, 4)
+  )
+
+# Export
+write.csv(
+  np_table,
+  "D:/Planktothrix_microbiomes/manuscript_figures/supplemental/nonpareil_summary.csv",
+  row.names = FALSE
+)
+
+```
+

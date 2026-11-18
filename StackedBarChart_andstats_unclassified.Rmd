@@ -1,0 +1,874 @@
+---
+title: "Planktothrix Stacked Bar Chart"
+output: pdf_document
+date: "2025-02-06"
+---
+
+Create stacked taxa bar chart showing relative abundance in each culture
+read in .txt file that we got from omics box
+```{r setup, include=FALSE}
+# Start with a clean slate
+rm(list=ls())
+
+# Load libraries
+library(tidyr)
+library(dplyr)
+library(ggplot2)
+library(RColorBrewer)
+library(ggsci)
+library(tidyverse)
+library(patchwork)
+library(vegan)
+
+# Read file
+taxo <- read.table("D:/Planktothrix_microbiomes/kraken/gtdbtk/taxonomic_classification.txt", sep = "\t", header = TRUE, fill = TRUE)
+
+```
+
+Filter for genus level only
+```{r}
+taxo_genus <- taxo[taxo$Rank %in% c("genus", "unclassified"), ]
+```
+
+
+Calculate percentages
+```{r}
+
+taxo_data <- taxo_genus[, -c(1, 2, 3)]  # Remove the Rank, TaxId, and Scientific Name columns (adjust column indexes if necessary)
+
+# Calculate column sums (total abundance per sample)
+col_sums <- colSums(taxo_data)
+
+# Calculate percentage relative to each sample (i.e., normalize columns)
+taxo_percentage <- sweep(taxo_data, 2, col_sums, FUN = "/") * 100
+
+
+```
+
+Apply 1% threshold so that anything that is less than 1% of the population will be put into other
+```{r}
+# Make a separate copy for the stacked bar chart
+# Keep taxo_percentage unchanged so it retains the TRUE relative abundances
+taxo_percentage_stacked <- taxo_percentage
+
+# Identify values < 1%
+low_abundance_mask <- taxo_percentage_stacked < 1
+
+# Calculate "Other" row
+other_row <- colSums(
+  taxo_percentage_stacked * low_abundance_mask,
+  na.rm = TRUE
+)
+
+# Set <1% values to zero ONLY in the stacked-bar copy
+taxo_percentage_stacked[low_abundance_mask] <- 0
+
+# Filter out genera that are <1% in every sample
+keep_rows <- rowSums(taxo_percentage_stacked) > 0
+
+taxo_percentage_filtered <-
+  taxo_percentage_stacked[keep_rows, ]
+
+taxo_metadata_filtered <- taxo_genus[keep_rows, c(1, 2, 3)]
+
+# Add metadata back to filtered data
+taxo_filtered <- cbind(taxo_metadata_filtered, taxo_percentage_filtered)
+
+# Build the "Other" row
+other_row_df <- data.frame(
+  Rank = "genus",
+  TaxId = NA,
+  Scientific.Name = "Other",
+  t(other_row)
+)
+colnames(other_row_df) <- colnames(taxo_filtered)
+
+# Combine with "Other"
+taxo_filtered <- rbind(taxo_filtered, other_row_df)
+
+
+```
+
+
+Reshape data for plotting
+```{r}
+# Reshape the data to long format
+taxo_long <- pivot_longer(taxo_filtered, cols = starts_with("Trim"), names_to = "Sample", values_to = "Abundance")
+
+# Remove rows where abundance is NA (below the 1% threshold)
+taxo_long <- taxo_long[!is.na(taxo_long$Abundance), ]
+
+# Rename samples since they still have trimmed read titles
+taxo_long <- taxo_long %>%
+  mutate(Sample = dplyr::recode(Sample,
+    "Trim135115_CCACAACA.GTACCACA_S55" = "1810",
+    "Trim135108_CGGCATTA.GTCAGTCA_S48" = "1031",
+    "Trim135109_CACGCAAT.CCTTCCAT_S49" = "1033",
+    "Trim135110_GGAATGTC.AGGAACAC_S50" = "1809",
+    "Trim135112_GGACATCA.TACCTGCA_S52" = "1025",
+    "Trim135113_GGTGTACA.AGACGCTA_S53" = "1027",
+    "Trim135114_GATAGCCA.CAACACAG_S54" = "1808",
+    "TrimHH3VGDSXY_s4" = "1026",
+    "TrimHH3VGDSXY_s4_1029" = "1029",
+    "TrimHH3VGDSXY_s4_1030" = "1030",
+    "TrimHH3VGDSXY_s4_1032" = "1032",
+    "TrimHH3VGDSXY_s4_1801" = "1801",
+    "TrimHH3VGDSXY_s4_1802" = "1802",
+    "TrimHH3VGDSXY_s4_1803" = "1803",
+    "TrimHH3VGDSXY_s4_1804" = "1804",
+    "TrimHH3VGDSXY_s4_1805" = "1805",
+    "TrimHH3VGDSXY_s4_1806" = "1806",
+    "TrimHH3VGDSXY_s4_1807" = "1807",
+    "TrimHH3VGDSXY_s4_1811" = "1811",
+    "TrimHH3VGDSXY_s4_1812" = "1812"
+  ))
+
+taxo_long <- taxo_long %>%
+  mutate(Scientific.Name = recode(Scientific.Name,
+                                  "Kinneretia" = "JACDQM01 (Kinneretia)"))
+
+```
+
+Create stacked bar chart
+```{r}
+
+# Calculate overall genus abundance
+
+
+# This determines the legend order.
+# Genera are ranked by their total abundance across all samples.
+# "Other" will be placed last regardless of abundance.
+
+genus_abundance <- taxo_long %>%
+  group_by(Scientific.Name) %>%
+  summarise(
+    total_abundance = sum(Abundance, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  arrange(
+    Scientific.Name == "Other",
+    desc(total_abundance)
+  )
+
+
+
+# Set legend order
+
+genus_order <- genus_abundance %>%
+  filter(
+    as.character(Scientific.Name) != "Other"
+  ) %>%
+  pull(Scientific.Name) %>%
+  as.character()
+
+genus_order <- c(
+  genus_order,
+  "Other"
+)
+
+taxo_long <- taxo_long %>%
+  mutate(
+    Scientific.Name = factor(
+      as.character(Scientific.Name),
+      levels = genus_order
+    )
+  )
+
+
+# Set sample order
+
+sample_order <- c(
+  "1025", "1026", "1027", "1029", "1030",
+  "1031", "1032", "1033",
+  "1801", "1802", "1803", "1804", "1805",
+  "1806", "1807", "1808", "1809", "1810",
+  "1811", "1812"
+)
+
+taxo_long <- taxo_long %>%
+  mutate(
+    Sample = factor(
+      Sample,
+      levels = sample_order
+    )
+  )
+
+
+
+# Order genera independently within each sample
+
+taxo_plot <- taxo_long %>%
+  filter(
+    Abundance > 0
+  ) %>%
+  group_by(Sample) %>%
+  arrange(
+    Scientific.Name == "Other",
+    desc(Abundance),
+    .by_group = TRUE
+  ) %>%
+  mutate(
+    xmin = lag(
+      cumsum(Abundance),
+      default = 0
+    ),
+    xmax = cumsum(Abundance)
+  ) %>%
+  ungroup()
+
+
+
+
+# Create genus color palette
+
+my_colors <- c(
+  "darkgrey",
+  "#477FA3",
+  "#C56F3D",
+  "#C996AC",
+  "#9A7135",
+  "#779B45",
+  "#C99A32",
+  "#C75A82",
+  "#626262",
+  "#89665C",
+  "#57935B",
+  "#C97E7C",
+  "#765A9B",
+  "#A45132",
+  "#3D929B",
+  "#9A9A45",
+  "#8A70A2",
+  "#3F8F78",
+  "#B66F9B",
+  "#287D8E",
+  "#B5A65D",
+  "#5B5FAD",
+  "#88A96F",
+  "#9A8CAF",
+  "#A9867D",
+  "#7E9DB5",
+  "#D07cdD"
+)
+
+
+# Identified genera only
+identified_genera <- genus_order[
+  genus_order != "Other"
+]
+
+
+# Make sure enough colors are available
+stopifnot(
+  length(my_colors) >=
+    length(identified_genera)
+)
+
+
+# Assign colors according to overall abundance rank
+genus_colors <- setNames(
+  my_colors[
+    seq_along(identified_genera)
+  ],
+  identified_genera
+)
+
+
+# Other is always neutral gray
+genus_colors <- c(
+  genus_colors,
+  "Other" = "#D0D0D0"
+)
+
+
+# Create stacked bar chart
+
+stacked_chart <- ggplot(
+  taxo_plot,
+  aes(
+    xmin = xmin,
+    xmax = xmax,
+    ymin = as.numeric(Sample) - 0.425,
+    ymax = as.numeric(Sample) + 0.425,
+    fill = Scientific.Name
+  )
+) +
+  geom_rect() +
+  scale_fill_manual(
+    values = genus_colors,
+    breaks = genus_order,
+    drop = FALSE
+  ) +
+  scale_x_continuous(
+    breaks = c(
+      0,
+      25,
+      50,
+      75,
+      100
+    ),
+    expand = c(
+      0,
+      0
+    )
+  ) +
+  scale_y_continuous(
+    breaks = seq_along(sample_order),
+    labels = sample_order,
+    expand = expansion(
+      add = 0.5
+    )
+  ) +
+  coord_cartesian(
+    xlim = c(
+      0,
+      100
+    )
+  ) +
+  labs(
+    x = "Relative Abundance (%)",
+    y = expression(
+      italic("Planktothrix") ~
+        "Isolate Designation"
+    ),
+    fill = "Genus"
+  ) +
+  guides(
+    fill = guide_legend(
+      nrow = 4,
+      byrow = TRUE
+    )
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(
+      size = 10
+    ),
+    axis.text.y = element_text(
+      size = 10
+    ),
+    legend.title = element_text(
+      size = 10
+    ),
+    legend.text = element_text(
+      size = 8
+    ),
+    legend.position = "bottom",
+    legend.direction = "horizontal",
+    legend.key.size = unit(
+      0.4,
+      "cm"
+    ),
+    legend.spacing.x = unit(
+      0.15,
+      "cm"
+    )
+  )
+
+stacked_chart
+
+
+
+
+
+```
+
+
+
+```{r}
+# Save figure
+
+ggsave(
+  paste0(
+    "D:/Planktothrix_microbiomes/manuscript_figures/",
+    "bar_charts/stacked_bar_chart_gtdbtk_unclassified.png"
+  ),
+  stacked_chart,
+  width = 10,
+  height = 6,
+  dpi = 600
+)
+```
+
+
+
+Create genus abundance boxplots across cultures
+```{r}
+# Start with the relative abundance data BEFORE the 1% filtering so that low-abundance observations are retained
+genus_boxplot_data <- taxo_percentage %>%
+  as.data.frame()
+
+# Add genus names
+genus_boxplot_data$Scientific.Name <- taxo_genus$Scientific.Name
+
+
+# Read GTDB-Tk classification output
+gtdb <- read.delim(
+  "D:/Planktothrix_microbiomes/gtdb_output/339MAGs/classify/gtdbtk.bac120.summary.tsv",
+  sep = "\t",
+  header = TRUE,
+  check.names = FALSE
+)
+
+# Extract genus and phylum from GTDB taxonomy
+genus_phylum_lookup <- gtdb %>%
+  select(classification) %>%
+  separate(
+    classification,
+    into = c(
+      "domain",
+      "phylum",
+      "class",
+      "order",
+      "family",
+      "genus",
+      "species"
+    ),
+    sep = ";",
+    fill = "right"
+  ) %>%
+  mutate(
+    Phylum = str_remove(phylum, "^p__"),
+    Scientific.Name = str_remove(genus, "^g__")
+  ) %>%
+  select(Scientific.Name, Phylum) %>%
+  filter(
+    !is.na(Scientific.Name),
+    Scientific.Name != "",
+    !is.na(Phylum),
+    Phylum != ""
+  ) %>%
+  distinct()
+
+# Assign phylum using GTDB taxonomy
+genus_boxplot_data <- genus_boxplot_data %>%
+  left_join(
+    genus_phylum_lookup,
+    by = "Scientific.Name",
+    relationship = "many-to-one"
+  )
+
+# Rename Kinneretia
+genus_boxplot_data <- genus_boxplot_data %>%
+  mutate(
+    Scientific.Name = recode(
+      Scientific.Name,
+      "Kinneretia" = "JACDQM01 (Kinneretia)"
+    )
+  )
+
+# Assign phylum to genera not matched in GTDB
+genus_boxplot_data <- genus_boxplot_data %>%
+  mutate(
+    Phylum = case_when(
+      Scientific.Name == "Unknown" ~ "Unclassified",
+      Scientific.Name %in% c(
+        "JACDQM01 (Kinneretia)",
+        "Roseomonas_A",
+        "Erythrobacter",
+        "Nordella"
+      ) & is.na(Phylum) ~ "Pseudomonadota",
+      TRUE ~ Phylum
+    )
+  )
+
+# Convert from wide format to long format
+# Each row will now represent one genus in one culture/sample.
+genus_boxplot_long <- genus_boxplot_data %>%
+  pivot_longer(
+    cols = -c(Scientific.Name, Phylum),
+    names_to = "Culture",
+    values_to = "Abundance"
+  )
+
+# Determine which genera to display
+# Keep genera whose MAXIMUM abundance across samples reaches at least 1%.
+genera_to_plot <- genus_boxplot_long %>%
+  group_by(Scientific.Name) %>%
+  summarise(
+    Max_Abundance = max(Abundance, na.rm = TRUE)
+  ) %>%
+  filter(Max_Abundance >= 1) %>%
+  pull(Scientific.Name)
+
+genus_boxplot_long <- genus_boxplot_long %>%
+  filter(Scientific.Name %in% genera_to_plot)
+
+# Order genera by median abundance
+genus_order <- genus_boxplot_long %>%
+  group_by(Scientific.Name) %>%
+  summarise(Median_Abundance = median(Abundance, na.rm = TRUE)) %>%
+  arrange(desc(Median_Abundance)) %>%
+  pull(Scientific.Name)
+
+genus_boxplot_long$Scientific.Name <- factor(
+  genus_boxplot_long$Scientific.Name,
+  levels = genus_order
+)
+
+# Create boxplot with individual samples shown as points
+boxplot <- ggplot(
+  genus_boxplot_long,
+  aes(
+    x = Scientific.Name,
+    y = Abundance,
+    fill = Phylum
+  )
+) +
+  geom_boxplot(
+    outlier.shape = NA,
+    alpha = 0.8
+  ) +
+  geom_jitter(
+    width = 0.15,
+    size = 1.5,
+    alpha = 0.5
+  ) +
+  labs(
+    x = "Genus",
+    y = "Relative Abundance (%)"
+  ) +
+  theme_minimal() +
+  theme(
+    legend.position = "bottom",
+    legend.direction = "horizontal",
+    axis.text.x = element_text(
+      angle = 45,
+      hjust = 1
+    )
+  ) +
+  scale_fill_manual(
+    values = c(
+    "Actinomycetota"  = "#7c6f64",
+    "Bacteroidota"    = "#5b7694",
+    "Cyanobacteriota" = "#52796f",
+    "Pseudomonadota"  = "#b45f5a",
+    "Chloroflexota"   = "#C49A56",
+      "Unclassified" = "darkgrey"
+    )
+  )
+
+boxplot
+```
+
+
+
+```{r}
+# Save figure
+ggsave(
+  "D:/Planktothrix_microbiomes/manuscript_figures/bar_charts/genus_abundance_boxplot_unclassified.png",
+  boxplot,
+  width = 10,
+  height = 6,
+  dpi = 600
+)
+
+
+```
+
+
+
+Combine figures
+```{r}
+combined_figure <- stacked_chart | boxplot
+
+combined_figure <- combined_figure +
+  plot_layout(
+    widths = c(1, 1.2)
+  ) +
+  plot_annotation(
+    tag_levels = "A",
+    theme = theme(
+      plot.tag = element_text(
+        size = 14,
+        face = "bold"
+      )
+    )
+  )
+
+combined_figure
+```
+
+
+```{r}
+ggsave(
+  "D:/Planktothrix_microbiomes/manuscript_figures/bar_charts/combined_genus_figure_unclassified.png",
+  combined_figure,
+  width = 18,
+  height = 8,
+  dpi = 600
+)
+
+# PDF version
+ggsave(
+  "D:/Planktothrix_microbiomes/manuscript_figures/pdf_figs/FigS2.pdf",
+  plot = combined_figure,
+  device = cairo_pdf,
+  width = 18,
+  height = 8,
+  units = "in"
+)
+```
+
+
+
+Stats: is the community uniform or different across the cultures?
+```{r}
+# Prep abundance matrix 
+
+# Convert to long format for creating a matrix
+abundance_long <- taxo_percentage %>%
+  as.data.frame() %>%
+  mutate(Scientific.Name = taxo_genus$Scientific.Name) %>%
+  pivot_longer(cols = -Scientific.Name, names_to = "Sample", values_to = "Abundance")
+
+# Pivot to get samples as rows, genera as columns
+abundance_matrix <- abundance_long %>%
+  pivot_wider(names_from = Scientific.Name, values_from = Abundance, values_fill = 0)
+
+# Convert to data.frame (tibble can't have rownames)
+abundance_matrix <- as.data.frame(abundance_matrix)
+
+# Set rownames from the Sample column
+rownames(abundance_matrix) <- abundance_matrix$Sample
+
+# Remove Sample column
+abundance_matrix <- abundance_matrix[, -1]
+
+#need to rename samples for grouping later in PERMANOVA step
+sample_name_map <- c(
+  "Trim135115_CCACAACA.GTACCACA_S55" = "1810",
+  "Trim135108_CGGCATTA.GTCAGTCA_S48" = "1031",
+  "Trim135109_CACGCAAT.CCTTCCAT_S49" = "1033",
+  "Trim135110_GGAATGTC.AGGAACAC_S50" = "1809",
+  "Trim135112_GGACATCA.TACCTGCA_S52" = "1025",
+  "Trim135113_GGTGTACA.AGACGCTA_S53" = "1027",
+  "Trim135114_GATAGCCA.CAACACAG_S54" = "1808",
+  "TrimHH3VGDSXY_s4" = "1026",
+  "TrimHH3VGDSXY_s4_1029" = "1029",
+  "TrimHH3VGDSXY_s4_1030" = "1030",
+  "TrimHH3VGDSXY_s4_1032" = "1032",
+  "TrimHH3VGDSXY_s4_1801" = "1801",
+  "TrimHH3VGDSXY_s4_1802" = "1802",
+  "TrimHH3VGDSXY_s4_1803" = "1803",
+  "TrimHH3VGDSXY_s4_1804" = "1804",
+  "TrimHH3VGDSXY_s4_1805" = "1805",
+  "TrimHH3VGDSXY_s4_1806" = "1806",
+  "TrimHH3VGDSXY_s4_1807" = "1807",
+  "TrimHH3VGDSXY_s4_1811" = "1811",
+  "TrimHH3VGDSXY_s4_1812" = "1812"
+)
+
+# Apply mapping
+rownames(abundance_matrix) <- sample_name_map[rownames(abundance_matrix)]
+
+#--------------------------------------- create grouping factor --------------------------------------------
+# Group by 10xx vs 18xx series
+sample_group <- ifelse(grepl("^10", rownames(abundance_matrix)), "10xx", "18xx")
+sample_group <- factor(sample_group)
+
+#--------------------------------------- Bray-Curtis & PERMANOVA --------------------------------------------
+
+# Bray-Curtis dissimilarity
+dist_bc <- vegdist(abundance_matrix, method = "bray")
+
+# PERMANOVA
+set.seed(42)
+permanova_res <- adonis2(dist_bc ~ sample_group, permutations = 999)
+permanova_res
+
+
+#the 10xx series has 3 outliers making the two groups "technically" different but most are clustering together
+#the below check is with outliers removed
+#--------------------------------------- bray-curtis dissimilarity --------------------------------------------
+
+# Remove outlier samples
+abundance_matrix_no_outliers <- abundance_matrix[!(rownames(abundance_matrix) %in% c("1031","1032", "1030")), ]
+
+# Update sample group
+sample_group_no_outliers <- ifelse(grepl("^10", rownames(abundance_matrix_no_outliers)), "10xx", "18xx")
+sample_group_no_outliers <- factor(sample_group_no_outliers)
+
+# Bray-Curtis dissimilarity without outliers
+dist_bc_no_outliers <- vegdist(abundance_matrix_no_outliers, method = "bray")
+
+# PERMANOVA without outliers
+set.seed(42)
+permanova_res_no_outliers <- adonis2(dist_bc_no_outliers ~ sample_group_no_outliers, permutations = 999)
+permanova_res_no_outliers
+
+
+```
+
+
+
+
+PCoA
+```{r}
+# Compute PCoA
+pcoa_result <- cmdscale(
+  dist_bc,
+  k = 2,
+  eig = TRUE,
+  add = TRUE
+)
+
+# Extract coordinates
+pcoa_coords <- as.data.frame(pcoa_result$points)
+colnames(pcoa_coords) <- c("PC1", "PC2")
+pcoa_coords$Sample <- rownames(abundance_matrix)
+
+eig <- pcoa_result$eig
+
+# Percentage variation explained
+percent_explained <- eig / sum(eig[eig > 0]) * 100
+
+pc1_percent <- round(percent_explained[1], 1)
+pc2_percent <- round(percent_explained[2], 1)
+
+# Plot
+ggplot(pcoa_coords, aes(x = PC1, y = PC2, label = Sample)) +
+  geom_point(size = 3) +
+  geom_text(vjust = -0.5, size = 3) +
+  theme_minimal() +
+  labs(
+    x = paste0("PCoA 1 (", pc1_percent, "%)"),
+    y = paste0("PCoA 2 (", pc2_percent, "%)"),
+    color = "Culture"
+  )
+```
+
+
+```{r}
+ggsave("D:/Planktothrix_microbiomes/manuscript_figures/supplemental/figS1PCoA.svg", width = 10, height = 6, units = "in")
+
+
+```
+
+
+
+Which genus are causing the outliers
+```{r}
+# Mean abundance per genus
+genus_means <- colMeans(abundance_matrix)
+
+# Extract the outlier samples
+outliers <- abundance_matrix[c("1030", "1031", "1032"), ]
+
+# Calculate difference from the mean for each genus
+diff_from_mean <- sweep(outliers, 2, genus_means, FUN = "-")
+
+# View top genera that deviate the most in each outlier
+top_diff_1030_named <- sort(unlist(diff_from_mean["1030", ]), decreasing = TRUE)[1:10]
+top_diff_1031_named <- sort(unlist(diff_from_mean["1031", ]), decreasing = TRUE)[1:10]
+top_diff_1032_named <- sort(unlist(diff_from_mean["1032", ]), decreasing = TRUE)[1:10]
+
+top_diff_1030_named
+top_diff_1031_named
+top_diff_1032_named
+
+```
+
+
+
+Look for any unique species before applying 1% threshold
+```{r}
+# Combine percentages with metadata
+taxo_with_meta <- cbind(
+  taxo_genus[, c("Rank", "TaxId", "Scientific.Name")],  # metadata
+  taxo_percentage
+)
+
+# Create presence matrix: anything > 0 is considered present
+presence_matrix <- taxo_with_meta[, -c(1,2,3)] > 0
+
+# Count in how many samples each genus appears
+sample_counts <- rowSums(presence_matrix)
+
+
+# Unique genera: appear in exactly 1 sample
+unique_genera <- taxo_with_meta[sample_counts == 1, ]
+unique_genera$Unique_to <- apply(presence_matrix[sample_counts == 1, ], 1, function(x) {
+  colnames(presence_matrix)[which(x)]
+})
+
+
+# Shared genera: appear in more than 1 but not all samples
+num_samples <- ncol(presence_matrix)
+shared_genera <- taxo_with_meta[sample_counts > 1 & sample_counts < num_samples, ]
+
+
+# Core genera: appear in all samples
+core_genera <- taxo_with_meta[sample_counts == num_samples, ]
+
+
+# Outputs
+cat("Number of unique genera:", nrow(unique_genera), "\n")
+cat("Number of shared genera:", nrow(shared_genera), "\n")
+cat("Number of core genera:", nrow(core_genera), "\n")
+
+# View results
+head(unique_genera)
+head(shared_genera)
+head(core_genera)
+
+```
+
+
+
+Which genus is the most abundant and how much more abundant is it
+```{r}
+# Exclude Planktothrix
+taxo_no_plankt_counts <- taxo_genus[taxo_genus$Scientific.Name != "Planktothrix", ]
+
+# Calculate total raw counts per genus across all samples
+taxo_no_plankt_counts$Total_Abundance <- rowSums(taxo_no_plankt_counts[, -c(1,2,3)])
+
+# Identify the most abundant genus
+most_abundant_idx <- which.max(taxo_no_plankt_counts$Total_Abundance)
+most_abundant_genus <- taxo_no_plankt_counts$Scientific.Name[most_abundant_idx]
+most_abundance_value <- taxo_no_plankt_counts$Total_Abundance[most_abundant_idx]
+
+# Compare to the second most abundant genus
+taxo_sorted <- taxo_no_plankt_counts[order(-taxo_no_plankt_counts$Total_Abundance), ]
+second_most_abundance <- taxo_sorted$Total_Abundance[2]
+difference <- most_abundance_value - second_most_abundance
+fold_difference <- most_abundance_value / second_most_abundance
+
+# Output results
+cat("Most abundant genus (excluding Planktothrix):", most_abundant_genus, "\n")
+cat("Total abundance (sum of raw counts across samples):", most_abundance_value, "\n")
+cat("Second most abundant genus:", taxo_sorted$Scientific.Name[2], "\n")
+cat("Difference in abundance:", difference, "\n")
+cat("Fold difference:", round(fold_difference, 2), "times more abundant\n")
+
+```
+
+
+
+Is there differences between relative abundances of specific genus between diff cultures
+```{r}
+# Summarize genus relative abundance across the 20 cultures
+genus_variation <- genus_boxplot_long %>%
+  group_by(Scientific.Name) %>%
+  summarise(
+    n = sum(!is.na(Abundance)),
+    Mean = mean(Abundance, na.rm = TRUE),
+    Median = median(Abundance, na.rm = TRUE),
+    SD = sd(Abundance, na.rm = TRUE),
+    IQR = IQR(Abundance, na.rm = TRUE),
+    Min = min(Abundance, na.rm = TRUE),
+    Max = max(Abundance, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  arrange(desc(Median))
+
+
+# Save
+write.csv(
+  genus_variation,
+  "D:/Planktothrix_microbiomes/manuscript_figures/supplemental/kraken_abundance_variation.csv",
+  row.names = FALSE
+)
+```
+

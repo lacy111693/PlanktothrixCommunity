@@ -1,0 +1,542 @@
+---
+title: "Complex Carbon Degradation"
+output: pdf_document
+date: "2026-10-01"
+---
+
+```{r}
+# Start with a clean slate
+rm(list = ls())
+
+# Load libraries
+library(readxl)
+library(dplyr)
+library(tidyr)
+library(stringr)
+library(ggplot2)
+library(patchwork)
+
+# Read file
+metabolic_xlsx <- paste0(
+  "D:/Planktothrix_microbiomes/metabolic_output/",
+  "65genus/METABOLIC_result.xlsx"
+)
+
+# Read the FunctionHit sheet
+metabolic_genes <- read_excel(
+  metabolic_xlsx,
+  sheet = "FunctionHit"
+)
+
+# Extract only complex carbon degradation rows
+complex_carbon <- metabolic_genes %>%
+  filter(Category == "Complex carbon degradation")
+
+```
+
+
+
+Long format and cleaning
+```{r}
+# Convert the 65 MAG columns to long format
+complex_carbon_long <- complex_carbon %>%
+  pivot_longer(
+    cols = -c(Category, Function, Gene.abbreviation),
+    names_to = "MAG_raw",
+    values_to = "Presence"
+  )
+
+# Clean MAG names so they match the CoverM/Fig. 5E identifiers
+complex_carbon_long <- complex_carbon_long %>%
+  mutate(
+    MAG = MAG_raw %>%
+      str_remove("^X") %>%
+      str_remove("^extracted_") %>%
+      str_remove("\\.Function\\.presence$")
+  )
+
+# Convert Present/Absent to binary values
+complex_carbon_long <- complex_carbon_long %>%
+  mutate(
+    Presence = case_when(
+      Presence == "Present" ~ 1,
+      Presence == "Absent"  ~ 0,
+      TRUE ~ NA_real_
+    )
+  )
+
+```
+
+
+
+Some helpful calculations
+```{r}
+# How widely distributed is each carbon degradation gene?
+gene_prevalence <- complex_carbon_long %>%
+  group_by(
+    Function,
+    Gene.abbreviation
+  ) %>%
+  summarise(
+    MAGs_present = sum(Presence, na.rm = TRUE),
+    Percent_MAGs = MAGs_present / 48 * 100,
+    .groups = "drop"
+  ) %>%
+  arrange(desc(MAGs_present))
+
+
+# How broad is the carbon degradation repertoire of each MAG?
+mag_carbon_breadth <- complex_carbon_long %>%
+  group_by(MAG) %>%
+  summarise(
+    Functions_detected = sum(Presence, na.rm = TRUE),
+    Percent_functions = Functions_detected / 17 * 100,
+    .groups = "drop"
+  ) %>%
+  arrange(desc(Functions_detected))
+```
+
+
+
+Bring in relative abundance from coverm and find avg for each genus
+```{r}
+# Read in files
+folder <- "D:/Planktothrix_microbiomes/coverm_65"
+
+files <- list.files(
+  path = folder,
+  pattern = "\\.tsv$",
+  full.names = TRUE
+)
+
+data_list <- lapply(files, function(f) {
+  
+  dat <- read.delim(
+    f,
+    header = TRUE,
+    sep = "\t",
+    check.names = FALSE,
+    stringsAsFactors = FALSE
+  )
+  
+  # Keep only Genome + the 3 measurements
+  dat <- dat[, 1:4]
+  
+  # Give the columns consistent names
+  colnames(dat) <- c(
+    "Genome",
+    "Mean",
+    "Relative_Abundance",
+    "Covered_Fraction"
+  )
+  
+  dat
+})
+
+names(data_list) <- tools::file_path_sans_ext(basename(files))
+
+# Combine all
+all_data <- bind_rows(data_list, .id = "Culture")
+
+# Remove "coverm_" from the Culture names 
+all_data <- all_data %>% mutate( Culture = sub("^coverm_", "", Culture) )
+
+
+# Remove CoverM "unmapped" rows
+all_data <- all_data %>%
+  filter(
+    !grepl("unmapped", Genome, ignore.case = TRUE)
+  )
+
+
+# Calculate median relative abundance for each genome
+median_abundance <- all_data %>%
+  group_by(Genome) %>%
+  summarise(
+    Median_Relative_Abundance = median(
+      Relative_Abundance,
+      na.rm = TRUE
+    ),
+    .groups = "drop"
+  ) %>%
+  arrange(
+    desc(Median_Relative_Abundance)
+  )
+
+```
+
+
+
+We want to order the genus by phylum
+```{r}
+# Get phylum from GTDB
+gtdb <- read.delim(
+  "D:/Planktothrix_microbiomes/metabolic_output/65genus/gtdbtk_Genome_files/classify/gtdbtk.bac120.summary.tsv",
+  sep = "\t",
+  header = TRUE,
+  check.names = FALSE
+)
+
+# Extract taxonomy from GTDB classification
+taxonomy <- gtdb %>%
+  select(user_genome, classification) %>%
+  separate(
+    classification,
+    into = c(
+      "domain",
+      "phylum",
+      "class",
+      "order",
+      "family",
+      "genus",
+      "species"
+    ),
+    sep = ";",
+    fill = "right"
+  ) %>%
+  mutate(
+    domain  = str_remove(domain,  "^d__"),
+    phylum  = str_remove(phylum,  "^p__"),
+    class   = str_remove(class,   "^c__"),
+    order   = str_remove(order,   "^o__"),
+    family  = str_remove(family,  "^f__"),
+    genus   = str_remove(genus,   "^g__"),
+    species = str_remove(species, "^s__")
+  )
+
+# Create one genus-to-phylum lookup
+genus_phylum_lookup <- taxonomy %>%
+  filter(
+    !is.na(genus),
+    genus != "",
+    !is.na(phylum),
+    phylum != ""
+  ) %>%
+  distinct(
+    genus,
+    phylum
+  )
+
+genus_phylum_lookup <- genus_phylum_lookup %>%
+  filter(
+    genus != "f_CAISDR01"
+  ) %>%
+  bind_rows(
+    tibble(
+      genus = "f_CAISDR01",
+      phylum = "Pseudomonadota"
+    )
+  )
+
+# Create MAG-level taxonomy table for the carbon degradation figure
+mag_taxonomy <- taxonomy %>%
+  mutate(
+    MAG = user_genome) %>%
+  select(
+    MAG,
+    genus,
+    phylum
+  ) %>%
+  mutate(
+    genus = recode(
+      genus,
+      "NK_genus" = "f_CAISDR01"
+    ),
+    
+    # Keep the same manual phylum assignment used in Fig. 5E
+    phylum = if_else(
+      genus == "f_CAISDR01",
+      "Pseudomonadota",
+      phylum
+    )
+  )
+```
+
+
+
+Create annotation table
+```{r}
+phylum_colors <- c(
+  "Actinomycetota"  = "#7c6f64",
+  "Bacteroidota"    = "#5b7694",
+  "Cyanobacteriota" = "#52796f",
+  "Pseudomonadota"  = "#b45f5a",
+    "Chloroflexota"   = "#C49A56"
+)
+
+phylum_order <- names(phylum_colors)
+
+
+mag_annotation <- complex_carbon_long %>%
+  distinct(MAG) %>%
+  
+  # Add genus and phylum
+  left_join(
+    mag_taxonomy,
+    by = "MAG"
+  ) %>%
+  
+  # Add CoverM median relative abundance
+  left_join(
+    median_abundance,
+    by = c("MAG" = "Genome")
+  ) %>%
+  
+  mutate(
+    phylum = factor(
+      phylum,
+      levels = phylum_order
+    )
+  )
+
+# Ordering
+mag_order <- mag_annotation %>%
+  arrange(
+    phylum,
+    desc(Median_Relative_Abundance),
+    genus,
+    MAG
+  ) %>%
+  pull(MAG)
+
+
+mag_annotation <- mag_annotation %>%
+  mutate(
+    MAG = factor(
+      MAG,
+      levels = rev(mag_order)
+    )
+  )
+
+
+complex_carbon_long <- complex_carbon_long %>%
+  mutate(
+    MAG = factor(
+      MAG,
+      levels = rev(mag_order)
+    )
+  )
+```
+
+
+
+Plot
+```{r}
+# Define phylum colors
+phylum_colors <- c(
+  "Actinomycetota"  = "#7c6f64",
+  "Bacteroidota"    = "#5b7694",
+  "Cyanobacteriota" = "#52796f",
+  "Pseudomonadota"  = "#b45f5a",
+    "Chloroflexota"   = "#C49A56"
+)
+
+
+# Preserve METABOLIC's original order of carbon degradation
+# functions rather than sorting alphabetically
+gene_order <- complex_carbon %>%
+  pull(Gene.abbreviation) %>%
+  unique()
+
+complex_carbon_long <- complex_carbon_long %>%
+  mutate(
+    Gene.abbreviation = factor(
+      Gene.abbreviation,
+      levels = gene_order
+    ),
+    MAG = factor(
+      MAG,
+      levels = rev(mag_order)
+    )
+  )
+
+
+# Genus/phylum annotation panel
+phylum_plot <- ggplot(
+  mag_annotation,
+  aes(
+    x = 1,
+    y = MAG,
+    fill = phylum
+  )
+) +
+  geom_tile(
+    alpha = 0.5
+  ) +
+  geom_text(
+    aes(
+      label = genus
+    ),
+    size = 3.2
+  ) +
+  scale_fill_manual(
+    values = phylum_colors,
+    drop = FALSE
+  ) +
+  scale_x_continuous(
+    expand = c(0, 0)
+  ) +
+  labs(
+    fill = "Phylum"
+  ) +
+  theme_void() +
+  theme(
+    legend.position = "bottom",
+    plot.margin = margin(
+      t = 0,
+      r = 0,
+      b = 0,
+      l = 0
+    )
+  )
+
+
+# MAG ID column
+mag_id_plot <- ggplot(
+  mag_annotation,
+  aes(
+    x = 1,
+    y = MAG
+  )
+) +
+  geom_text(
+    aes(
+      label = MAG
+    ),
+    size = 3.2
+  ) +
+  scale_x_continuous(
+    limits = c(0.5, 1.5),
+    expand = c(0, 0)
+  ) +
+  theme_void() +
+  theme(
+    plot.margin = margin(
+      t = 0,
+      r = 2,
+      b = 0,
+      l = 2
+    )
+  )
+
+
+# Median CoverM relative abundance column
+abundance_plot <- ggplot(
+  mag_annotation,
+  aes(
+    x = 1,
+    y = MAG
+  )
+) +
+  geom_text(
+    aes(
+      label = sprintf(
+        "%.2f",
+        Median_Relative_Abundance
+      )
+    ),
+    size = 3.2
+  ) +
+  scale_x_continuous(
+    limits = c(0.5, 1.5),
+    expand = c(0, 0)
+  ) +
+  theme_void() +
+  theme(
+    plot.margin = margin(
+      t = 0,
+      r = 2,
+      b = 0,
+      l = 2
+    )
+  )
+
+
+# Complex-carbon degradation presence/absence matrix
+carbon_plot <- ggplot(
+  complex_carbon_long,
+  aes(
+    x = Gene.abbreviation,
+    y = MAG
+  )
+) +
+  geom_tile(
+    aes(fill = factor(Presence)),
+    color = "black",
+    linewidth = 0.25
+  ) +
+  
+  # Separate the six functional categories
+  geom_vline(
+    xintercept = c(3.5, 6.5, 8.5, 11.5, 15.5),
+    linewidth = 0.8
+  ) +
+  
+  scale_fill_manual(
+    values = c(
+      "0" = "white",
+      "1" = "#d6a85f"
+    ),
+    labels = c(
+      "0" = "Absent",
+      "1" = "Present"
+    ),
+    name = "Complex carbon\ndegradation function"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(
+      angle = 45,
+      hjust = 1,
+      vjust = 1
+    ),
+    axis.text.y = element_blank(),
+    axis.ticks.y = element_blank(),
+    axis.title = element_blank(),
+    panel.grid = element_blank(),
+    legend.position = "bottom",
+    plot.margin = margin(
+      t = 0,
+      r = 0,
+      b = 0,
+      l = 0
+    )
+  )
+
+
+# Combine panels
+carbon_combined_plot <-
+  phylum_plot +
+  mag_id_plot +
+  abundance_plot +
+  carbon_plot +
+  plot_layout(
+    widths = c(
+      2.0,
+      2.4,
+      0.8,
+      12
+    ),
+    guides = "collect"
+  ) &
+  theme(
+    legend.position = "bottom"
+  )
+
+
+carbon_combined_plot
+```
+
+
+
+Save
+```{r}
+
+ggsave(
+  filename = "D:/Planktothrix_microbiomes/manuscript_figures/supplemental/carbon_degradation_plot.svg",
+  plot = carbon_combined_plot,
+  width = 12,
+  height = 10,
+  units = "in"
+)
+```

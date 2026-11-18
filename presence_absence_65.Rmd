@@ -1,0 +1,629 @@
+---
+title: "presence_absence"
+author: "Lacy Miller"
+date: "2025-09-30"
+output: pdf_document
+---
+
+Make presence absence chart with genus data
+```{r}
+# Start with a clean slate
+rm(list=ls())
+
+# Load libraries
+library(dplyr)
+library(tidyverse)
+library(ComplexHeatmap)
+library(circlize)
+library(pheatmap)
+library(patchwork)
+
+# Read files
+metabolic_file <- paste0(
+  "D:/Planktothrix_microbiomes/metabolic_output/",
+  "65genus/MW-score_result_table_input.txt"
+)
+
+genus_mw_score <- read.delim(
+  metabolic_file,
+  sep = "\t",
+  header = TRUE,
+  check.names = FALSE,
+  stringsAsFactors = FALSE
+)
+
+# Convert Func1 and Func2 into one MAG x function table
+#
+# Each row of the original file contains a pair of metabolic
+# functions. Extract each individual function occurring in
+# either Func1 or Func2 for each MAG.
+metabolic_long <- genus_mw_score %>%
+  select(
+    user_genome = `#Genome`,
+    Func1,
+    Func2,
+    Genus = `Taxonomic Group`
+  ) %>%
+  pivot_longer(
+    cols = c(Func1, Func2),
+    names_to = "function_source",
+    values_to = "Function"
+  ) %>%
+  filter(
+    !is.na(Function),
+    Function != ""
+  ) %>%
+   distinct(
+    user_genome,
+    Genus,
+    Function
+  )
+
+
+# Create MAG x function presence/absence table
+presence_absence <- metabolic_long %>%
+  select(
+    user_genome,
+    Genus,
+    Function
+  ) %>%
+  mutate(
+    Genus = recode(
+      Genus,
+      "NK_genus" = "f_CAISDR01"
+    ),
+    Presence = 1
+  ) %>%
+  complete(
+    nesting(
+      user_genome,
+      Genus
+    ),
+    Function,
+    fill = list(
+      Presence = 0
+    )
+  )
+
+# Now plot
+full_plot <- ggplot(presence_absence, aes(x = Function, y = user_genome, fill = factor(Presence))) +
+  geom_tile(color = "black") +
+  scale_fill_manual(values = c("0" = "white", "1" = "black")) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    axis.title = element_blank(),
+    legend.position = "none"
+  )
+
+```
+
+
+Combine similar functions for organization
+```{r}
+
+# Define dictionary for cycle assignment
+cycle_lookup <- c(
+  # Carbon cycle
+  "Carbon fixation" = "Carbon",
+  "Fermentation" = "Carbon",
+  "Organic carbon oxidation" = "Carbon",
+  "Methanotrophy" = "Carbon",
+  "Hydrogen generation" = "Carbon",
+  "Ethanol oxidation" = "Carbon",
+  "Acetate oxidation" = "Carbon",
+  "Hydrogen oxidation" = "Carbon",
+  
+  # Nitrogen cycle
+  "Nitrate reduction" = "Nitrogen",
+  "Nitrite reduction" = "Nitrogen",
+  "Nitric oxide reduction" = "Nitrogen",
+  "Nitrous oxide reduction" = "Nitrogen",
+  "Nitrite ammonification" = "Nitrogen",
+  
+  # Sulfur cycle
+  "Sulfate reduction" = "Sulfur",
+  "Sulfide oxidation" = "Sulfur",
+  "Sulfite oxidation" = "Sulfur",
+  "Sulfite reduction" = "Sulfur",
+  "Sulfur oxidation" = "Sulfur",
+  "Thiosulfate oxidation" = "Sulfur",
+  "Thiosulfate disproportionation" = "Sulfur",
+  
+  # Iron
+  "Iron oxidation" = "Iron",
+  "Iron reduction" = "Iron"
+)
+
+# Some functions are broken down into more specific parts like nitrate reduction and carbon fixation, we are gonna put those back together and clean up names
+presence_absence_grouped <- presence_absence %>%
+  mutate(
+    # Replace non-breaking spaces with normal spaces
+    Function_clean = str_replace_all(
+      Function,
+      "\u00A0",
+      " "
+    ),
+    
+    # Remove METABOLIC function code at the beginning
+    Function_clean = str_remove(
+      Function_clean,
+      "^[A-Za-z]+-[A-Za-z]+-[0-9]+:"
+    ),
+    
+    # Remove anything after "(" and trim whitespace
+    Function_clean = str_replace(
+      Function_clean,
+      "\\s*\\(.*\\)",
+      ""
+    ) %>%
+      str_trim(),
+    
+    # Collapse subfunctions by taking text before " - "
+    Function_group = str_extract(
+      Function_clean,
+      "^[^-]+"
+    ) %>%
+      str_trim(),
+    
+    # Remove trailing colon if present
+    Function_group = str_replace(
+      Function_group,
+      ":$",
+      ""
+    )
+  ) %>%
+  filter(
+    Function_group != "Arsenite oxidation"
+  ) %>%
+  group_by(
+  Function_group,
+  Genus,
+  user_genome
+  ) %>%
+  summarise(
+    Presence = as.numeric(any(Presence == 1)),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    Cycle = cycle_lookup[Function_group]
+  )
+
+# Order Function_group by cycle priority
+presence_absence_grouped <- presence_absence_grouped %>%
+  mutate(
+    Cycle = factor(Cycle, levels = c("Carbon", "Nitrogen", "Sulfur", "Iron")),
+    Function_group = factor(Function_group,
+                            levels = unique(Function_group[order(Cycle)]))
+  )
+
+clean_plot <- ggplot(presence_absence_grouped,
+                     aes(x = Function_group, y = user_genome)) +
+  geom_tile(aes(fill = interaction(Presence, Cycle)), color = "black") +
+  scale_fill_manual(
+    values = c(
+      "0.Carbon"   = "white",
+      "0.Nitrogen" = "white",
+      "0.Sulfur"   = "white",
+      "0.Iron"    = "white",
+      "1.Carbon"   = "#d6a85fff",  
+      "1.Nitrogen" = "#a88bc2ff", 
+      "1.Sulfur"   = "#d98c73ff",
+      "1.Iron"    = "#81a6a1ff"
+    ),
+    guide = "none"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    axis.title  = element_blank()
+  )
+
+
+
+```
+
+
+
+Bring in relative abundance from coverm and find avg for each genus
+```{r}
+# Read in files
+folder <- "D:/Planktothrix_microbiomes/coverm_65"
+
+files <- list.files(
+  path = folder,
+  pattern = "\\.tsv$",
+  full.names = TRUE
+)
+
+data_list <- lapply(files, function(f) {
+  
+  dat <- read.delim(
+    f,
+    header = TRUE,
+    sep = "\t",
+    check.names = FALSE,
+    stringsAsFactors = FALSE
+  )
+  
+  # Keep only Genome + the 3 measurements
+  dat <- dat[, 1:4]
+  
+  # Give the columns consistent names
+  colnames(dat) <- c(
+    "Genome",
+    "Mean",
+    "Relative_Abundance",
+    "Covered_Fraction"
+  )
+  
+  dat
+})
+
+names(data_list) <- tools::file_path_sans_ext(basename(files))
+
+# Combine all
+all_data <- bind_rows(data_list, .id = "Culture")
+
+# Remove "coverm_" from the Culture names 
+all_data <- all_data %>% mutate( Culture = sub("^coverm_", "", Culture) )
+
+
+# Remove CoverM "unmapped" rows
+all_data <- all_data %>%
+  filter(
+    !grepl("unmapped", Genome, ignore.case = TRUE)
+  )
+
+
+# Calculate median relative abundance for each genome
+median_abundance <- all_data %>%
+  group_by(Genome) %>%
+  summarise(
+    Median_Relative_Abundance = median(
+      Relative_Abundance,
+      na.rm = TRUE
+    ),
+    .groups = "drop"
+  ) %>%
+  arrange(
+    desc(Median_Relative_Abundance)
+  )
+
+```
+
+
+
+We want to order the genus by phylum
+```{r}
+# Get phylum from GTDB
+gtdb <- read.delim(
+  "D:/Planktothrix_microbiomes/metabolic_output/339genus/gtdbtk_Genome_files/classify/gtdbtk.bac120.summary.tsv",
+  sep = "\t",
+  header = TRUE,
+  check.names = FALSE
+)
+
+# Extract taxonomy from GTDB classification
+taxonomy <- gtdb %>%
+  select(user_genome, classification) %>%
+  separate(
+    classification,
+    into = c(
+      "domain",
+      "phylum",
+      "class",
+      "order",
+      "family",
+      "genus",
+      "species"
+    ),
+    sep = ";",
+    fill = "right"
+  ) %>%
+  mutate(
+    domain  = str_remove(domain,  "^d__"),
+    phylum  = str_remove(phylum,  "^p__"),
+    class   = str_remove(class,   "^c__"),
+    order   = str_remove(order,   "^o__"),
+    family  = str_remove(family,  "^f__"),
+    genus   = str_remove(genus,   "^g__"),
+    species = str_remove(species, "^s__")
+  )
+
+# Create one genus-to-phylum lookup
+genus_phylum_lookup <- taxonomy %>%
+  filter(
+    !is.na(genus),
+    genus != "",
+    !is.na(phylum),
+    phylum != ""
+  ) %>%
+  distinct(
+    genus,
+    phylum
+  )
+
+genus_phylum_lookup <- genus_phylum_lookup %>%
+  filter(
+    genus != "f_CAISDR01"
+  ) %>%
+  bind_rows(
+    tibble(
+      genus = "f_CAISDR01",
+      phylum = "Pseudomonadota"
+    )
+  )
+
+# Add phylum to genus-level presence/absence data
+presence_absence_grouped <- presence_absence_grouped %>%
+  left_join(
+    genus_phylum_lookup,
+    by = c("Genus" = "genus")
+  )
+```
+
+
+
+Plots
+```{r}
+# Define phylum colors
+phylum_colors <- c(
+  "Actinomycetota"  = "#7c6f64",
+  "Bacteroidota"    = "#5b7694",
+  "Cyanobacteriota" = "#52796f",
+  "Pseudomonadota"  = "#b45f5a",
+    "Chloroflexota"   = "#C49A56"
+)
+
+phylum_order <- names(
+  phylum_colors
+)
+
+
+# Create one annotation row for each MAG
+mag_annotation <- presence_absence_grouped %>%
+  distinct(
+    user_genome,
+    Genus,
+    phylum
+  ) %>%
+  mutate(
+    user_genome = as.character(user_genome),
+    Genus = as.character(Genus)
+  ) %>%
+  
+  # Add median relative abundance for each MAG
+  left_join(
+    median_abundance %>%
+      mutate(
+        Genome = as.character(Genome)
+      ),
+    by = c("user_genome" = "Genome")
+  ) %>%
+  
+  # Set phylum order
+  mutate(
+    phylum = factor(
+      phylum,
+      levels = phylum_order
+    )
+  )
+
+
+# Establish MAG order:
+# phylum first, then descending median abundance within phylum
+mag_order <- mag_annotation %>%
+  arrange(
+    phylum,
+    desc(Median_Relative_Abundance),
+    Genus,
+    user_genome
+  ) %>%
+  pull(
+    user_genome
+  )
+
+
+# Apply identical row order to annotation data
+mag_annotation <- mag_annotation %>%
+  mutate(
+    user_genome = factor(
+      user_genome,
+      levels = rev(mag_order)
+    )
+  )
+
+
+# Apply identical row order to metabolic data
+presence_absence_grouped <- presence_absence_grouped %>%
+  mutate(
+    phylum = factor(
+      phylum,
+      levels = phylum_order
+    ),
+    user_genome = factor(
+      user_genome,
+      levels = rev(mag_order)
+    )
+  )
+
+
+# Create phylum and genus annotation panel
+phylum_plot <- ggplot(
+  mag_annotation,
+  aes(
+    x = 1,
+    y = user_genome,
+    fill = phylum
+  )
+) +
+  geom_tile(
+    alpha = 0.5
+  ) +
+  geom_text(
+    aes(
+      label = Genus
+    ),
+    size = 3.2
+  ) +
+  scale_fill_manual(
+    values = phylum_colors,
+    drop = FALSE
+  ) +
+  scale_x_continuous(
+    expand = c(0, 0)
+  ) +
+  labs(
+    fill = "Phylum"
+  ) +
+  theme_void() +
+  theme(
+    legend.position = "bottom",
+    plot.margin = margin(
+      t = 0,
+      r = 0,
+      b = 0,
+      l = 0
+    )
+  )
+
+
+# Create user_genome column
+mag_id_plot <- ggplot(
+  mag_annotation,
+  aes(
+    x = 1,
+    y = user_genome
+  )
+) +
+  geom_text(
+    aes(
+      label = user_genome
+    ),
+    size = 3.2
+  ) +
+  scale_x_continuous(
+    limits = c(0.5, 1.5),
+    expand = c(0, 0)
+  ) +
+  theme_void() +
+  theme(
+    plot.margin = margin(
+      t = 0,
+      r = 2,
+      b = 0,
+      l = 2
+    )
+  )
+
+# Create median relative abundance column
+abundance_plot <- ggplot(
+  mag_annotation,
+  aes(
+    x = 1,
+    y = user_genome
+  )
+) +
+  geom_text(
+    aes(
+      label = sprintf(
+        "%.2f",
+        Median_Relative_Abundance
+      )
+    ),
+    size = 3.2
+  ) +
+  scale_x_continuous(
+    limits = c(0.5, 1.5),
+    expand = c(0, 0)
+  ) +
+  theme_void() +
+  theme(
+    plot.margin = margin(
+      t = 0,
+      r = 2,
+      b = 0,
+      l = 2
+    )
+  )
+
+# Create metabolic presence/absence matrix
+clean_plot <- ggplot(
+  presence_absence_grouped,
+  aes(
+    x = Function_group,
+    y = user_genome
+  )
+) +
+  geom_tile(
+    aes(
+      fill = interaction(
+        Presence,
+        Cycle
+      )
+    ),
+    color = "black",
+    linewidth = 0.25
+  ) +
+  scale_fill_manual(
+    values = c(
+      "0.Carbon"   = "white",
+      "0.Nitrogen" = "white",
+      "0.Sulfur"   = "white",
+      "0.Iron"     = "white",
+      "1.Carbon"   = "#d6a85f",
+      "1.Nitrogen" = "#a88bc2",
+      "1.Sulfur"   = "#d98c73",
+      "1.Iron"     = "#81a6a1"
+    ),
+    guide = "none"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(
+      angle = 45,
+      hjust = 1
+    ),
+    axis.text.y = element_blank(),
+    axis.ticks.y = element_blank(),
+    axis.title = element_blank(),
+    panel.grid = element_blank()
+  )
+
+# Combine genus, MAG ID, abundance, and metabolic matrix
+combined_plot <-
+  phylum_plot +
+  mag_id_plot +
+  abundance_plot +
+  clean_plot +
+  plot_layout(
+    widths = c(
+      2.0,
+      2.4,
+      0.8,
+      12
+    ),
+    guides = "collect"
+  ) &
+  theme(
+    legend.position = "bottom"
+  )
+
+combined_plot
+```
+
+
+
+Save
+```{r}
+
+ggsave(
+  filename = "D:/Planktothrix_microbiomes/manuscript_figures/cycles_presence_absence/presence_absence_plot_65.svg",
+  plot = combined_plot,
+  width = 12,
+  height = 10,
+  units = "in"
+)
+```
+
