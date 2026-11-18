@@ -1,0 +1,124 @@
+---
+title: "EachBinGenus"
+author: "Lacy Miller"
+date: "2025-08-19"
+output: pdf_document
+---
+
+Make heat map from MW-score txt file
+```{r}
+# Start with a clean slate
+rm(list=ls())
+
+library(dplyr)
+library(tidyverse)
+library(ComplexHeatmap)
+library(circlize)
+library(pheatmap)
+
+# Read tab-delimited file 
+mw_score <- read.delim("D:/Planktothrix_microbiomes/metabolic_output/65phylum/MW-score_result.txt",
+                       header = TRUE, sep = "\t", check.names = FALSE)
+
+# Extract numeric phylum contribution data
+phylum_matrix <- as.matrix(mw_score[, -(1:2)])  # drop Function + MW-score columns
+rownames(phylum_matrix) <- mw_score$Function
+
+# ht2 matrix with MW-score column
+ht2_matrix <- data.frame(
+  Function = mw_score$Function,
+  MW_score = as.numeric(mw_score$`MW-score for each function`),
+  stringsAsFactors = FALSE
+)
+
+# Color functions
+col_fun <- colorRamp2(
+  c(0, 25, 50, 75, 100),
+  c(
+    "#F7FBFF",
+    "#A6CEE3",
+    "#5A9CCB",
+    "#2F6FAE",
+    "#123F73"
+  )
+)
+mw_col_fun <- colorRamp2(
+  c(
+    min(ht2_matrix$MW_score, na.rm = TRUE),
+    max(ht2_matrix$MW_score, na.rm = TRUE)
+  ),
+  c(
+    "#F7FBFF",
+    "#123F73"
+  )
+)
+
+# ---- Function column as its own heatmap (ht3) ----
+ht3 <- Heatmap(
+  matrix(1, nrow = nrow(ht2_matrix), ncol = 1), # placeholder numeric
+  name = "Function",
+  col = "white",
+  width = unit(90, "mm"),
+  cluster_rows = FALSE,
+  cluster_columns = FALSE,
+  show_row_names = FALSE,
+  show_column_names = FALSE,
+  rect_gp = gpar(col = "black", lwd = 0.5),
+  show_heatmap_legend = FALSE,
+  cell_fun = function(j, i, x, y, w, h, fill) {
+    grid.text(ht2_matrix$Function[i], x, y, gp = gpar(fontsize = 8))
+  }
+)
+
+# ---- MW-score column heatmap (ht2) ----
+ht2 <- Heatmap(
+  matrix(ht2_matrix$MW_score, ncol = 1),
+  name = "MW-score",
+  col = mw_col_fun,
+  width = unit(10, "mm"),
+  cluster_rows = FALSE,
+  cluster_columns = FALSE,
+  show_row_names = FALSE,
+  show_column_names = FALSE,
+  rect_gp = gpar(col = "black", lwd = 0.5),
+  show_heatmap_legend = FALSE,
+  cell_fun = function(j, i, x, y, w, h, fill) {
+    grid.text(sprintf("%.1f", ht2_matrix$MW_score[i]), x, y, gp = gpar(fontsize = 6))
+  }
+)
+
+# ---- Main phylum heatmap ----
+ht <- Heatmap(
+  phylum_matrix,
+  name = "Contribution %",
+  col = col_fun,
+  width = unit(30, "mm"),
+  cluster_rows = FALSE,
+  cluster_columns = FALSE,
+  show_row_names = FALSE,
+  show_column_names = FALSE,
+  rect_gp = gpar(col = "black", lwd = 0.5),
+  show_heatmap_legend = FALSE,
+  cell_fun = function(j, i, x, y, w, h, fill) {
+    grid.text(sprintf("%.1f", phylum_matrix[i, j]), x, y, gp = gpar(fontsize = 6))
+  }
+)
+
+# ---- Draw everything side by side ----
+draw(ht3 + ht2 + ht)
+
+svg(
+  "D:/Planktothrix_microbiomes/manuscript_figures/mw_score/phyla_mw_score.svg",
+  width = 12,
+  height = 8
+)
+
+draw(ht3 + ht2 + ht)
+
+dev.off()
+
+
+
+
+```
+
