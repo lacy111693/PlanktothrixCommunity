@@ -1,0 +1,105 @@
+---
+title: "Best MAGs Planktothrix"
+output: pdf_document
+date: "2025-02-07"
+---
+```{r}
+# Start with a clean slate
+rm(list=ls())
+
+# Load libraries
+library(readr)
+library(tidyverse)
+library(jsonlite)
+library(stringr)
+library(dplyr)
+```
+
+
+Read GTDB file
+```{r}
+gtdb <- read.delim("D:/Planktothrix_microbiomes/gtdb_output/339MAGs/classify/gtdbtk.bac120.summary.tsv", header = TRUE)
+
+# Extract genus name from classification string
+gtdb$genus <- sub(".*;g__([^;]+).*", "\\1", gtdb$classification)
+
+```
+
+
+Still need contigs, can get it from checkm
+```{r}
+checkm <- read.csv(
+  "D:/Planktothrix_microbiomes/checkm_dastool_all20_combined.csv",
+  colClasses = c(culture = "character", genome_base = "character")
+)
+
+checkm <- checkm %>%
+  mutate(
+    old_bin_name = genome_base,
+
+    # Remove the old metaSPAdes wording
+    genome_base = str_remove(genome_base, "_metaSPAdes"),
+
+    # Rename numeric CONCOCT bins
+    genome_base = if_else(
+      str_detect(genome_base, "^\\d+(_sub)?$"),
+      paste0(culture, "_concoct.", genome_base),
+      genome_base
+    )
+  )
+
+```
+
+
+Now keep all columns from checkm but only keep bins that are in gtdb
+```{r}
+
+final_data <- checkm %>%
+  semi_join(gtdb, by = c("genome_base" = "user_genome")) %>%
+  left_join(
+    gtdb %>% 
+      dplyr::select(user_genome, genus, classification),
+    by = c("genome_base" = "user_genome")
+  ) 
+
+
+```
+
+
+Rename and organize columns
+```{r}
+final_data <- final_data %>%
+  rename(
+    `Bin Identity` = `genus`,
+    `Culture Origin` = `genome_base`,
+    `Bin completeness` = `completeness`,
+    `Bin contamination` = `contamination`,
+    `Number of contigs` = `number_of_contigs`,
+    `Size of genome (bp)` = `genome_size_bp`,
+    `GTDB Classification` = `classification`
+  )
+
+#order it
+final_data <- final_data %>%
+  dplyr::select(
+    `Bin Identity`, 
+    `Culture Origin`, 
+    `Bin completeness`, 
+    `Bin contamination`, 
+    `Number of contigs`, 
+    `Size of genome (bp)`,
+    `GTDB Classification`
+  ) %>%
+  arrange(`Bin Identity`)
+
+```
+
+
+
+export
+```{r}
+write.csv(final_data, "339_MAGs.csv", row.names = FALSE)
+write.csv(gtdb, "GTDB_output.csv", row.names = FALSE)
+
+```
+
