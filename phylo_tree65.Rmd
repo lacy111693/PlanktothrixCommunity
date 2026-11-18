@@ -1,0 +1,307 @@
+---
+title: "phylo_tree_48"
+output: pdf_document
+date: "2026-10-05"
+---
+Full huge phylogenetic tree
+```{r}
+# Start with a clean slate
+rm(list = ls())
+
+# GTDB-Tk phylogenetic placement figure
+library(ape)
+library(ggtree)
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(stringr)
+library(readxl)
+
+# Read GTDB-Tk outputs
+tree <- read.tree(
+  "D:/Planktothrix_microbiomes/gtdb_output_bestMAGsonly/65MAGs/classify/gtdbtk.backbone.bac120.classify.tree"
+)
+
+gtdb <- read.delim(
+  "D:/Planktothrix_microbiomes/gtdb_output_bestMAGsonly/65MAGs/gtdbtk.bac120.summary.tsv",
+  sep = "\t",
+  header = TRUE,
+  check.names = FALSE
+)
+
+
+# Extract taxonomy from GTDB classification
+taxonomy <- gtdb %>%
+  select(user_genome, classification) %>%
+  separate(
+    classification,
+    into = c(
+      "domain",
+      "phylum",
+      "class",
+      "order",
+      "family",
+      "genus",
+      "species"
+    ),
+    sep = ";",
+    fill = "right"
+  ) %>%
+  mutate(
+    domain  = str_remove(domain,  "^d__"),
+    phylum  = str_remove(phylum,  "^p__"),
+    class   = str_remove(class,   "^c__"),
+    order   = str_remove(order,   "^o__"),
+    family  = str_remove(family,  "^f__"),
+    genus   = str_remove(genus,   "^g__"),
+    species = str_remove(species, "^s__")
+  )
+
+# Use ORIGINAL GTDB names to match to the GTDB tree
+mag_ids <- taxonomy$user_genome
+
+# Verify that all MAGs occur in the GTDB placement tree
+sum(mag_ids %in% tree$tip.label)
+length(mag_ids)
+
+setdiff(mag_ids, tree$tip.label)
+
+
+# Create annotation dataframe for every tree tip
+tip_data <- data.frame(
+  label = tree$tip.label,
+  stringsAsFactors = FALSE
+) %>%
+  left_join(
+    taxonomy,
+    by = c("label" = "user_genome")
+  ) %>%
+  mutate(
+    genome_type = if_else(
+      label %in% mag_ids,
+      "MAG",
+      "GTDB reference"
+    )
+  )
+
+# Plot the full GTDB backbone
+p <- ggtree(
+  tree,
+  layout = "circular",
+  linewidth = 0.15
+) %<+% tip_data +
+  geom_tippoint(
+    data = function(x) dplyr::filter(x, label %in% mag_ids),
+    aes(color = phylum),
+    size = 1.6
+  ) +
+scale_color_manual(
+  name = "Phylum",
+  values = c(
+    "Actinomycetota"  = "#7c6f64",
+    "Bacteroidota"    = "#5b7694",
+    "Cyanobacteriota" = "#52796f",
+    "Pseudomonadota"  = "#b45f5a",
+    "Chloroflexota"   = "#C49A56"
+  )
+  ) +
+  theme(
+    legend.position = "right"
+  )
+
+p
+
+
+```
+
+
+Prune tree
+```{r}
+# PRUNE TREE TO MAGs AND RENAME TIPS FOR FIGURE / iTOL
+
+# Keep only our MAGs using ORIGINAL GTDB names
+mag_tree <- keep.tip(tree, mag_ids)
+
+# Check that the pruned tree contains all 48 MAGs
+Ntip(mag_tree)
+
+# Create annotation dataframe that matches the SHORTENED tree labels
+mag_tip_data <- taxonomy %>%
+  transmute(
+    label = user_genome,
+    user_genome,
+    domain,
+    phylum,
+    class,
+    order,
+    family,
+    genus,
+    species
+  )
+
+
+# Plot circular MAG-only tree
+p_mag <- ggtree(
+  mag_tree,
+  layout = "circular",
+  linewidth = 0.4
+) %<+% mag_tip_data +
+  geom_tippoint(
+    aes(color = phylum),
+    size = 1.8
+  ) +
+  scale_color_manual(
+    values = c(
+      "Actinomycetota"   = "#7c6f64",
+      "Bacteroidota"     = "#5b7694",
+      "Cyanobacteriota"  = "#52796f",
+      "Pseudomonadota"   = "#b45f5a",
+  "Chloroflexota"   = "#C49A56" 
+    )
+  ) +
+  theme(
+    legend.position = "right"
+  )
+
+p_mag
+
+# Plot rectangular MAG-only tree
+p_mag_rect <- ggtree(
+  mag_tree,
+  layout = "rectangular",
+  linewidth = 0.4
+) %<+% mag_tip_data +
+  geom_tippoint(
+    aes(color = phylum),
+    size = 1.5
+  ) +
+  scale_color_manual(
+    values = c(
+      "Actinomycetota"   = "#7c6f64",
+      "Bacteroidota"     = "#5b7694",
+      "Cyanobacteriota"  = "#52796f",
+      "Pseudomonadota"   = "#b45f5a",
+  "Chloroflexota"   = "#C49A56"
+    )
+  ) +
+  theme(
+    legend.position = "right"
+  )
+
+p_mag_rect
+
+```
+
+
+
+
+Exorts for iTOL
+```{r}
+
+# Export the MAG-only tree for iTOL
+# THIS FILE WILL CONTAIN THE SHORTENED TIP NAMES
+write.tree(
+  mag_tree,
+  file = "D:/Planktothrix_microbiomes/manuscript_figures/phylo_tree/MAG_65_GTDB_placement.tree"
+)
+
+# Create iTOL phylum annotation file
+
+# Choose colors for each phylum
+phylum_colors <- c(
+  "Actinomycetota"   = "#7c6f64",
+      "Bacteroidota"     = "#5b7694",
+      "Cyanobacteriota"  = "#52796f",
+      "Pseudomonadota"   = "#b45f5a",
+  "Chloroflexota"   = "#C49A56"
+)
+
+# Build annotation table using SHORT tree names
+itol_phylum <- taxonomy %>%
+  select(user_genome, phylum) %>%
+  mutate(
+    color = unname(phylum_colors[phylum])
+  )
+
+# Check that every MAG received a color
+itol_phylum %>%
+  filter(is.na(color))
+
+# Should return 0 rows
+
+# Write iTOL DATASET_COLORSTRIP file
+phylum_file <- "D:/Planktothrix_microbiomes/manuscript_figures/phylo_tree/iTOL_phylum_colorstrip_65.txt"
+
+cat(
+  "DATASET_COLORSTRIP\n",
+  "SEPARATOR TAB\n",
+  "DATASET_LABEL\tPhylum\n",
+  "COLOR\t#000000\n",
+  "STRIP_WIDTH\t25\n",
+  "MARGIN\t5\n",
+  "BORDER_WIDTH\t0\n",
+  "SHOW_INTERNAL\t0\n",
+  "DATA\n",
+  sep = "",
+  file = phylum_file
+)
+
+write.table(
+  itol_phylum %>%
+    transmute(
+      ID = user_genome,
+      COLOR = color,
+      LABEL = phylum
+    ),
+  file = phylum_file,
+  sep = "\t",
+  quote = FALSE,
+  row.names = FALSE,
+  col.names = FALSE,
+  append = TRUE
+)
+
+
+# CREATE iTOL DISPLAY LABELS:
+# Genus + MAG ID
+
+label_file <- paste0(
+  "D:/Planktothrix_microbiomes/manuscript_figures/",
+  "phylo_tree/iTOL_MAG_labels_65.txt"
+)
+
+# Create labels
+itol_labels <- taxonomy %>%
+  transmute(
+    ID = user_genome,
+    DISPLAY_LABEL = ifelse(
+      is.na(genus) | genus == "",
+      paste0("Unassigned | ", user_genome),
+      paste0(genus, " | ", user_genome)
+    )
+  )
+
+# Inspect before exporting
+print(itol_labels)
+
+# Write iTOL LABELS file
+cat(
+  "LABELS\n",
+  "SEPARATOR TAB\n",
+  "DATA\n",
+  sep = "",
+  file = label_file
+)
+
+write.table(
+  itol_labels,
+  file = label_file,
+  sep = "\t",
+  quote = FALSE,
+  row.names = FALSE,
+  col.names = FALSE,
+  append = TRUE
+)
+
+
+```
