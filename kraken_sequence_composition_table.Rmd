@@ -1,0 +1,188 @@
+---
+title: "Planktothrix Stacked Bar Chart"
+output: pdf_document
+date: "2025-02-06"
+---
+
+Read in kraken table read counts
+```{r setup, include=FALSE}
+# Start with a clean slate
+rm(list = ls())
+
+library(dplyr)
+library(tidyr)
+library(readr)
+
+# Read Kraken/OmicsBox taxonomy table
+taxo <- read.table(
+  "D:/Planktothrix_microbiomes/kraken/gtdbtk/taxonomic_classification.txt",
+  sep = "\t",
+  header = TRUE,
+  fill = TRUE,
+  check.names = FALSE
+)
+
+# Look at ranks present in the file
+table(taxo$Rank)
+
+```
+
+
+```{r}
+sample_cols <- setdiff(
+  colnames(taxo),
+  c("Rank", "TaxId", "Scientific Name")
+)
+
+# How many reads are unclassified
+unclassified <- taxo %>%
+  filter(Rank == "unclassified") %>%
+  select(all_of(sample_cols)) %>%
+  pivot_longer(
+    cols = everything(),
+    names_to = "Sample",
+    values_to = "Unclassified"
+  )
+
+
+# How many reads are classified
+domain_rows <- taxo %>%
+  filter(Rank == "domain")
+
+domain_rows[, c("Rank", "Scientific Name", sample_cols)]
+
+classified <- taxo %>%
+  filter(Rank == "domain") %>%
+  summarise(
+    across(
+      all_of(sample_cols),
+      ~sum(.x, na.rm = TRUE)
+    )
+  ) %>%
+  pivot_longer(
+    cols = everything(),
+    names_to = "Sample",
+    values_to = "Classified"
+  )
+
+# Calculate totals
+sequence_totals <- classified %>%
+  left_join(unclassified, by = "Sample") %>%
+  mutate(
+    Total_sequences = Classified + Unclassified
+  )
+```
+
+
+
+```{r}
+# How much is Planktothrix
+taxo %>%
+  filter(
+    Rank == "genus",
+    `Scientific Name` == "Planktothrix"
+  )
+
+planktothrix <- taxo %>%
+  filter(
+    Rank == "genus",
+    `Scientific Name` == "Planktothrix"
+  ) %>%
+  select(all_of(sample_cols)) %>%
+  pivot_longer(
+    cols = everything(),
+    names_to = "Sample",
+    values_to = "Planktothrix"
+  )
+
+# How much is "other" classified
+supp_table <- sequence_totals %>%
+  left_join(planktothrix, by = "Sample") %>%
+  mutate(
+    Other_classified = Classified - Planktothrix,
+
+    Planktothrix_percent =
+      (Planktothrix / Total_sequences) * 100,
+
+    Other_classified_percent =
+      (Other_classified / Total_sequences) * 100,
+
+    Unclassified_percent =
+      (Unclassified / Total_sequences) * 100
+  )
+
+
+# Rename cultures
+supp_table <- supp_table %>%
+  mutate(
+    Culture = recode(
+      Sample,
+      "Trim135115_CCACAACA-GTACCACA_S55" = "1810",
+      "Trim135108_CGGCATTA-GTCAGTCA_S48" = "1031",
+      "Trim135109_CACGCAAT-CCTTCCAT_S49" = "1033",
+      "Trim135110_GGAATGTC-AGGAACAC_S50" = "1809",
+      "Trim135112_GGACATCA-TACCTGCA_S52" = "1025",
+      "Trim135113_GGTGTACA-AGACGCTA_S53" = "1027",
+      "Trim135114_GATAGCCA-CAACACAG_S54" = "1808",
+      "TrimHH3VGDSXY_s4" = "1026",
+      "TrimHH3VGDSXY_s4_1029" = "1029",
+      "TrimHH3VGDSXY_s4_1030" = "1030",
+      "TrimHH3VGDSXY_s4_1032" = "1032",
+      "TrimHH3VGDSXY_s4_1801" = "1801",
+      "TrimHH3VGDSXY_s4_1802" = "1802",
+      "TrimHH3VGDSXY_s4_1803" = "1803",
+      "TrimHH3VGDSXY_s4_1804" = "1804",
+      "TrimHH3VGDSXY_s4_1805" = "1805",
+      "TrimHH3VGDSXY_s4_1806" = "1806",
+      "TrimHH3VGDSXY_s4_1807" = "1807",
+      "TrimHH3VGDSXY_s4_1811" = "1811",
+      "TrimHH3VGDSXY_s4_1812" = "1812"
+    )
+  )
+
+# Order them
+culture_order <- c(
+  "1025", "1026", "1027", "1029",
+  "1030", "1031", "1032", "1033",
+  "1801", "1802", "1803", "1804",
+  "1805", "1806", "1807", "1808",
+  "1809", "1810", "1811", "1812"
+)
+
+supp_table <- supp_table %>%
+  mutate(
+    Culture = factor(Culture, levels = culture_order)
+  ) %>%
+  arrange(Culture) %>%
+  select(
+    Culture,
+    Total_sequences,
+    Classified,
+    Planktothrix,
+    Other_classified,
+    Unclassified,
+    Planktothrix_percent,
+    Other_classified_percent,
+    Unclassified_percent
+  )
+
+# Round values
+supp_table_final <- supp_table %>%
+  mutate(
+    across(
+      ends_with("_percent"),
+      ~round(.x, 2)
+    )
+  )
+```
+
+
+Export
+```{r}
+write.csv(
+  supp_table_final,
+  "D:/Planktothrix_microbiomes/manuscript_figures/supplemental/kraken_sequence_composition.csv",
+  row.names = FALSE
+)
+```
+

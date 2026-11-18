@@ -1,0 +1,78 @@
+---
+title: "All MAGs Planktothrix"
+output: pdf_document
+date: "2025-02-07"
+---
+```{r}
+# Start with a clean slate
+rm(list=ls())
+
+# Load libraries
+library(readr)
+library(tidyverse)
+library(jsonlite)
+library(stringr)
+library(dplyr)
+```
+
+
+Get contigs, contamination, completness, and size from checkm
+```{r}
+checkm <- read.csv(
+  "D:/Planktothrix_microbiomes/checkm_dastool_all20_combined.csv",
+  colClasses = c(culture = "character", genome_base = "character")
+)
+
+checkm <- checkm %>%
+  mutate(
+    old_bin_name = genome_base,
+
+    # Remove the old metaSPAdes wording
+    genome_base = str_remove(genome_base, "_metaSPAdes"),
+
+    # Rename numeric CONCOCT bins
+    genome_base = if_else(
+      str_detect(genome_base, "^\\d+(_sub)?$"),
+      paste0(culture, "_concoct.", genome_base),
+      genome_base
+    )
+  )
+
+# Select only the desired columns
+checkm <- checkm[, c("genome_base", "number_of_contigs", "contamination", "completeness", "genome_size_bp")]
+
+```
+
+
+Rename and organize columns
+```{r}
+final_data <- checkm %>%
+  rename(
+    `Culture Origin` = `genome_base`,
+    `Bin completeness` = `completeness`,
+    `Bin contamination` = `contamination`,
+    `Number of contigs` = `number_of_contigs`,
+    `Size of genome (bp)` = `genome_size_bp`
+  )
+
+#order it
+final_data <- final_data %>%
+  dplyr::select(
+    `Culture Origin`, 
+    `Bin completeness`, 
+    `Bin contamination`, 
+    `Number of contigs`, 
+    `Size of genome (bp)`
+  ) %>%
+  arrange( as.numeric(str_extract(`Culture Origin`, "^[0-9]+")), as.numeric(str_extract(`Culture Origin`, "(?<=\\.)[0-9]+")) )
+
+```
+
+
+
+export
+```{r}
+write.csv(final_data, "AllMAGs417.csv", row.names = FALSE)
+
+```
+
